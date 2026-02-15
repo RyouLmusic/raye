@@ -1,0 +1,87 @@
+[
+    {
+        "name": "plan",
+        "version": "1.0.0",
+        "description": "Module for creating and managing plans within the AI agent framework.",
+        "base_url": "https://api-inference.modelscope.cn/v1",
+        "api_key": "ms-844adaa7-2296-479a-9624-b251dab3b7d6",
+        "model": "ZhipuAI/GLM-5",
+        "model_id": "GLM-5",
+        "provider": "ZhipuAI",
+        "extra_body": {
+            "temperature": 0.7,
+            "max_tokens": 2048
+        },
+        "prompt": "{PLAN_PROMPT}",
+        "max_output_tokens": 2048,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_retries": 3,
+        "timeout": 10000,
+        "tools": [],
+        "mcp": {}
+    },
+    {
+        "name": "agent",
+        "version": "1.0.0",
+        "description": "Module for executing actions based on the agent's decisions.",
+        "base_url": "https://api-inference.modelscope.cn/v1",
+        "api_key": "ms-844adaa7-2296-479a-9624-b251dab3b7d6",
+        "model": "deepseek-ai/DeepSeek-V3.2",
+        "model_id": "DeepSeek-V3.2",
+        "provider": "DeepSeek",
+        "extra_body": {
+            "enable_thinking": true
+        },
+        "prompt": "{AGENT_PROMPT}",
+        "max_output_tokens": 2048,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_retries": 3,
+        "timeout": 10000,
+        "tools": ["calculate"],
+        "mcp": {}
+    },
+    {
+        "name": "summary",
+        "version": "1.0.0",
+        "description": "Module for executing actions based on the agent's decisions.",
+        "base_url": "https://api-inference.modelscope.cn/v1",
+        "api_key": "ms-844adaa7-2296-479a-9624-b251dab3b7d6",
+        "model": "moonshotai/Kimi-K2.5",
+        "model_id": "Kimi-K2.5",
+        "provider": "Kimi",
+        "extra_body": {
+            "enable_thinking": true
+        },
+        "prompt": "{SUMMARY_PROMPT}",
+        "max_output_tokens": 2048,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_retries": 3,
+        "timeout": 10000,
+        "tools": ["calculate"],
+        "mcp": {}
+    },
+    {
+        "name": "compaction",
+        "version": "1.0.0",
+        "description": "压缩对话内容",
+        "base_url": "https://api-inference.modelscope.cn/v1",
+        "api_key": "ms-844adaa7-2296-479a-9624-b251dab3b7d6",
+        "model": "MiniMax/MiniMax-M2.5",
+        "model_id": "MiniMax-M2.5",
+        "provider": "MiniMax",
+        "extra_body": {
+            "reasoning_split": false
+        },
+        "prompt": "{COMPACTION_PROMPT}",
+        "max_output_tokens": 2048,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_retries": 3,
+        "timeout": 10000,
+        "tools": [],
+        "mcp": {}
+    }
+]

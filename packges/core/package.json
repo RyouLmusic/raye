@@ -1,0 +1,24 @@
+{
+  "name": "core",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "^3.0.8",
+    "@ai-sdk/provider-utils": "^4.0.15",
+    "@ai-sdk/openai-compatible": "2.0.30",
+    "ai": "^6.0.84",
+    "zod": "4.3.6",
+    "common": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
