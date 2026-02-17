@@ -83,5 +83,28 @@
         "timeout": 10000,
         "tools": [],
         "mcp": {}
+    },
+    {
+        "name": "subAgent",
+        "version": "1.0.0",
+        "description": "压缩对话内容",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "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",
+        "model": "qwen/qwen3.5-397b-a17b",
+        "model_id": "qwen3.5-397b-a17b",
+        "provider": "Qwen",
+        "extra_body": {
+            "chat_template_kwargs": {
+                "enable_thinking": true
+            } 
+        },
+        "prompt": "{SUB_AGENT_PROMPT}",
+        "max_output_tokens": 16384,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_retries": 3,
+        "timeout": 10000,
+        "tools": ["calculate"],
+        "mcp": {}
     }
 ]

@@ -10,14 +10,14 @@ import { calculate } from "@/tools/caculate.ts";
 async function useConfiguredToolsFullStream() {
     console.log("=== 示例1A: 使用配置中的工具（fullStream） ===\n");
     
-    const agent = loadAndGetAgent().summary!;
+    const agent = loadAndGetAgent().subAgent!;
 
     const result = await streamTextWrapper({
         agent,
         messages: [
             {
                 role: 'user',
-                content: '请帮我计算 123 加 456 等于多少？并且给出答案的详细步骤'
+                content: '请帮我计算 123 加 456 和 234 乘以 456 等于多少？并且给出答案的详细步骤'
             }
         ]
     });
