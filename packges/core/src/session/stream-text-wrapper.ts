@@ -1,4 +1,4 @@
-import { generateText, streamText, type ModelMessage } from "ai";
+import { generateText, streamText, type ModelMessage, type StreamTextResult } from "ai";
 import { Provider } from "@/provider/provider.js";
 import type { StreamTextInput } from "@/session/type.js";
 import { createUnifiedStreamTransform } from "@/session/stream-transformer.js";
@@ -8,7 +8,7 @@ import { getToolsByNames } from "@/tools/tools-register.ts";
 import { APP_NAME, formatDate } from "common";
 
 
-export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: StreamTextInput<TOOLS>) {
+export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: StreamTextInput<TOOLS>): Promise<StreamTextResult<TOOLS, never>> {
     const agentConfig = input.agent;
     const languageModel = Provider.getAgentLanguage(agentConfig);
     if (!languageModel) {
@@ -45,8 +45,8 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
             },
             finishReason: result.finishReason,
             steps: result.steps?.length || 0,
-            reasoningText: result.reasoningText?.substring(0, 100) || '', // 显示前100个字符
-            text: result.text?.substring(0, 100) || '' // 显示前100个字符
+            reasoningText: result.reasoningText || '',
+            text: result.text || ''
         });
     };
 

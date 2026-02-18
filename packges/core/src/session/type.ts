@@ -124,15 +124,47 @@ export const ProcessResult = z.enum([
 
 export type ProcessResult = z.infer<typeof ProcessResult>;
 
+// ============ Session 数据结构（纯数据）============
+
+/**
+ * Session 元数据
+ */
+export interface SessionMetadata {
+    readonly createdAt: Date;
+    readonly updatedAt: Date;
+    readonly totalIterations: number;
+    readonly totalTokens: number;
+    readonly lastCompactionAt?: Date;
+}
+
+/**
+ * Session - 用户与 Agent 的对话会话（不可变数据结构）
+ * 
+ * 职责：
+ * - 存储对话历史
+ * - 可序列化/反序列化
+ * - 支持持久化
+ */
+export interface Session {
+    readonly sessionId: string;
+    readonly userId?: string;
+    readonly agentId: string;
+    readonly messages: readonly z.infer<typeof modelMessageSchema>[];
+    readonly metadata: SessionMetadata;
+}
+
 // ============ Loop 输入输出类型 ============
 
 const loopInput = z.object({
+    /** Session ID - 用于从 SessionManager 获取或创建 session */
     sessionId: z.string(),
+    /** Agent 配置 */
     agentConfig: agentConfig,
-    initialMessages: z.array(modelMessageSchema),
+    /** 当前轮的用户新消息（每次对话必传）*/
+    message: modelMessageSchema,
     /** 最大迭代次数 */
     maxIterations: z.number().default(10),
-    /** 上下文压缩阈值（token数量） */
+    /** 上下文压缩阈值（消息数量） */
     compactThreshold: z.number().default(20),
     /** 最大 token 数量 */
     maxTokens: z.number().optional(),
@@ -141,17 +173,24 @@ const loopInput = z.object({
 export type LoopInput = z.infer<typeof loopInput>;
 
 /**
- * Agent Loop 的执行上下文
+ * Agent Loop 的执行上下文（临时状态）
+ * 
+ * 职责：
+ * - 管理状态机状态
+ * - 管理迭代计数
+ * - 引用 Session（不拥有数据）
  */
 export interface AgentLoopContext {
+    /** 关联的 Session（单一数据源）*/
+    session: Session;
+    
+    // ========== 执行状态（临时的）==========
     /** 当前状态 */
     state: AgentLoopState;
     /** 当前迭代次数 */
     iteration: number;
     /** 最大迭代次数 */
     maxIterations: number;
-    /** 当前消息列表 */
-    messages: z.infer<typeof modelMessageSchema>[];
     /** 是否需要压缩 */
     needsCompaction: boolean;
     /** 压缩阈值 */

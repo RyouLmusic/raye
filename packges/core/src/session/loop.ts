@@ -4,8 +4,15 @@ import type {
     LoopInput, 
     AgentLoopContext, 
     AgentLoopState,
-    LoopDecision 
+    LoopDecision,
+    Session 
 } from "@/session/type";
+import { 
+    SessionOps, 
+    SessionManager, 
+    SessionContext,
+    defaultSessionManager 
+} from "@/session/seesion";
 
 /**
  * Agent ReAct Loop 命名空间
@@ -29,26 +36,64 @@ export namespace AgentLoop {
      *              COMPLETED/FAILED
      * 
      * @param input - 循环输入参数
+     * @param sessionManager - Session 管理器（可选，默认使用全局实例）
      * @returns 最终的消息列表
      */
-    export async function loop(input: LoopInput) {
-        // 获取session
+    export async function loop(input: LoopInput,
+        sessionManager: SessionManager = defaultSessionManager) {
         // ============ 状态：INIT - 初始化 ============
+        
+        // 1. 从 SessionManager 获取或创建 Session（包含所有历史消息）
+        let session = await sessionManager.getOrCreate(
+            input.sessionId,
+            input.agentConfig.name
+        );
+
+        console.log(`[AgentLoop] 加载 Session: ${input.sessionId}`);
+        console.log(`[AgentLoop] 历史消息数: ${session.messages.length}`);
+
+        // 2. 添加当前轮的用户新消息
+        console.log(`[AgentLoop] 添加新消息: ${input.message.role}`);
+        session = SessionOps.addMessage(session, input.message);
+        // 立即保存新消息
+        await sessionManager.save(session);
+
+        // 3. 创建执行上下文（引用 Session）
         const context: AgentLoopContext = {
+            session,  // 引用 Session，不复制数据
             state: "INIT",
             iteration: 0,
             maxIterations: input.maxIterations,
-            messages: [...input.initialMessages],
             needsCompaction: false,
             compactThreshold: input.compactThreshold,
         };
 
         console.log(`[AgentLoop] 初始化 Session: ${input.sessionId}`);
         console.log(`[AgentLoop] 最大迭代次数: ${context.maxIterations}`);
+        console.log(`[AgentLoop] 当前消息数: ${context.session.messages.length}`);
         
         // 转换到 PLANNING 状态
         context.state = "PLANNING";
 
+        // ============ 在 Session 上下文中执行（支持 SessionContext.current()）============
+        return await SessionContext.run(context.session, async () => {
+            try {
+                return await executeLoop(context, input, sessionManager);
+            } finally {
+                // 确保最后保存 Session
+                await sessionManager.save(context.session);
+            }
+        });
+    }
+
+    /**
+     * 执行循环的主逻辑
+     */
+    async function executeLoop(
+        context: AgentLoopContext,
+        input: LoopInput,
+        sessionManager: SessionManager
+    ) {
         // ============ 主循环 ============
         while (true) {
             console.log(`[AgentLoop] 状态: ${context.state}, 迭代: ${context.iteration}/${context.maxIterations}`);
@@ -76,9 +121,9 @@ export namespace AgentLoop {
                 // 4. 准备 Planning Prompt（如果需要）
                 // 这里可以添加特殊的 planning 系统提示词
                 // const planningPrompt = generatePlanningPrompt(context);
-                
+                const { fullStream } = await Processor.plan(context.session.messages);
                 console.log(`[AgentLoop] 开始规划第 ${context.iteration} 轮行动`);
-                
+              
                 // 5. 转换到 EXECUTING 状态
                 context.state = "EXECUTING";
                 continue;
@@ -92,26 +137,37 @@ export namespace AgentLoop {
                     // 调用内层循环 - 处理 LLM 调用、重试、流式输出等
                     const result = await Processor.execute({
                         agent: input.agentConfig,
-                        messages: context.messages,
+                        messages: [...context.session.messages],  // 传递只读副本
                         maxRetries: input.agentConfig.max_retries ?? 3,
                         timeout: input.agentConfig.timeout,
                     });
 
-                    // 将 LLM 的响应添加到消息列表
+                    // 将 LLM 的响应添加到 Session（不可变操作）
                     if (result.message) {
-                        context.messages.push(result.message);
+                        context.session = SessionOps.addMessage(context.session, result.message);
                     }
 
-                    // 将工具调用结果添加到消息列表
+                    // 将工具调用结果添加到 Session
                     if (result.toolResults && result.toolResults.length > 0) {
                         const toolResultMessages: ModelMessage[] = result.toolResults.map((toolResult) => ({
-                            role: "assistant",
-                            content: `[Tool:${toolResult.toolName}] ${toolResult.content}`,
+                            role: "tool",
+                            content: [
+                                {
+                                    type: "tool-result",
+                                    toolCallId: toolResult.toolCallId,
+                                    toolName: toolResult.toolName,
+                                    output: JSON.parse(toolResult.content),  // output 应该是对象，不是字符串
+                                }
+                            ],
                         }));
-                        context.messages.push(...toolResultMessages);
+                        context.session = SessionOps.addMessages(context.session, toolResultMessages);
                     }
 
                     console.log(`[AgentLoop] LLM 调用成功，收到 ${result.toolCalls?.length ?? 0} 个工具调用`);
+                    console.log(`[AgentLoop] 当前消息数: ${context.session.messages.length}`);
+
+                    // 保存到 SessionManager
+                    await sessionManager.save(context.session);
 
                     // 转换到 OBSERVING 状态
                     context.state = "OBSERVING";
@@ -128,7 +184,8 @@ export namespace AgentLoop {
                 console.log(`[AgentLoop] 观察执行结果并决策`);
 
                 // 1. 分析最后一条消息
-                const lastMessage = context.messages[context.messages.length - 1];
+                const messages = context.session.messages;
+                const lastMessage = messages[messages.length - 1];
                 
                 // 2. 做出决策
                 const decision = makeDecision(context, lastMessage);
@@ -159,19 +216,17 @@ export namespace AgentLoop {
             // ============ 状态：COMPACTING - 压缩上下文 ============
             if (context.state === "COMPACTING") {
                 console.log(`[AgentLoop] 开始压缩上下文`);
-                console.log(`[AgentLoop] 压缩前消息数: ${context.messages.length}`);
+                console.log(`[AgentLoop] 压缩前消息数: ${context.session.messages.length}`);
 
                 try {
-                    // 调用压缩器
-                    // context.messages = await compressMessages(context.messages);
-                    
-                    // 临时实现：保留最近的 N 条消息
+                    // 调用压缩器（不可变操作）
                     const keepCount = Math.floor(context.compactThreshold * 0.7);
-                    const systemMessages = context.messages.filter(m => m.role === "system");
-                    const recentMessages = context.messages.slice(-keepCount);
-                    context.messages = [...systemMessages, ...recentMessages];
+                    context.session = SessionOps.compressMessages(context.session, keepCount);
 
-                    console.log(`[AgentLoop] 压缩后消息数: ${context.messages.length}`);
+                    console.log(`[AgentLoop] 压缩后消息数: ${context.session.messages.length}`);
+                    
+                    // 保存压缩后的 Session
+                    await sessionManager.save(context.session);
                     
                     context.needsCompaction = false;
                     context.state = "PLANNING";
@@ -186,12 +241,17 @@ export namespace AgentLoop {
             // ============ 状态：COMPLETED - 完成 ============
             if (context.state === "COMPLETED") {
                 console.log(`[AgentLoop] 循环完成，总迭代次数: ${context.iteration}`);
-                console.log(`[AgentLoop] 最终消息数: ${context.messages.length}`);
+                console.log(`[AgentLoop] 最终消息数: ${context.session.messages.length}`);
+                
+                // 更新元数据
+                context.session = SessionOps.incrementIterations(context.session, context.iteration);
+                await sessionManager.save(context.session);
                 
                 // 返回最终的消息列表
                 return {
                     success: true,
-                    messages: context.messages,
+                    session: context.session,
+                    messages: [...context.session.messages],  // 返回副本
                     iterations: context.iteration,
                 };
             }
@@ -201,10 +261,18 @@ export namespace AgentLoop {
                 console.error(`[AgentLoop] 循环失败，迭代: ${context.iteration}`);
                 console.error(`[AgentLoop] 错误:`, context.error);
                 
+                // 尝试保存当前状态
+                try {
+                    await sessionManager.save(context.session);
+                } catch (saveError) {
+                    console.error(`[AgentLoop] 保存失败状态时出错:`, saveError);
+                }
+                
                 // 返回错误信息
                 return {
                     success: false,
-                    messages: context.messages,
+                    session: context.session,
+                    messages: [...context.session.messages],
                     iterations: context.iteration,
                     error: context.error,
                 };
@@ -220,7 +288,7 @@ export namespace AgentLoop {
      */
     function shouldCompact(context: AgentLoopContext): boolean {
         // 1. 检查消息数量是否超过阈值
-        if (context.messages.length >= context.compactThreshold) {
+        if (context.session.messages.length >= context.compactThreshold) {
             return true;
         }
 
@@ -240,10 +308,7 @@ export namespace AgentLoop {
      * 2. 如果有工具调用，说明需要继续 → continue
      * 3. 如果消息过多，需要压缩 → compact
      */
-    function makeDecision(
-        context: AgentLoopContext, 
-        lastMessage: any
-    ): LoopDecision {
+    function makeDecision(context: AgentLoopContext, lastMessage: any): LoopDecision {
         // 1. 检查是否需要强制压缩
         if (context.needsCompaction) {
             return "compact";
