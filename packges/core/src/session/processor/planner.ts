@@ -58,11 +58,33 @@ async function plan(input: PlanInput): Promise<ProcessorStepResult> {
     const planAgent = loadAndGetAgent().plan!;
     const session = SessionContext.current();
 
-    // 清理消息：移除工具相关内容，因为 plan agent 不支持工具调用
+    // 清理消息：移除工具相关内容（tool role 消息、assistant 中的 tool-call 块），
+    // 因为 plan agent 不执行工具调用，传入这些消息会引起格式错误或模型困惑。
+    const cleanedMessages = messages
+        .filter((m) => m.role !== "tool")          // 去掉 tool-result 消息
+        .map((m) => {
+            if (m.role !== "assistant") return m;
+            // 去掉 assistant content 中的 tool-call 块，只保留 text 块
+            if (!Array.isArray(m.content)) return m;
+            const textBlocks = m.content.filter((b: any) => b?.type === "text");
+            if (textBlocks.length === 0) return null;  // 纯 tool-call 消息直接丢弃
+            return { ...m, content: textBlocks };
+        })
+        .filter(Boolean) as typeof messages;
+
+    // 构建工具列表提示（供规划参考，但不传给 AI SDK 的 tools 参数）
+    const toolsHint = planAgent.tools && planAgent.tools.length > 0
+        ? `\n\n## 可用工具\n\n执行 AI 可以调用以下工具来完成任务：\n${planAgent.tools.map(t => `- ${t}`).join('\n')}`
+        : '';
 
     const streamResult = await streamTextWrapper({
         agent: planAgent,
-        messages: [...messages],
+        messages: cleanedMessages,
+        // 关键：传 undefined 而不是空对象，让 GLM5 完全看不到工具系统，
+        // 避免输出 XML 标签或触发 NoOutputGeneratedError
+        tools: undefined,
+        // system prompt 注入工具信息供规划时参考
+        system: toolsHint ? [toolsHint] : undefined,
         maxRetries: 0,
     });
 

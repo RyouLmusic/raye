@@ -1,17 +1,17 @@
 import { Processor, processResutlToSession } from "@/session/processor";
 import type { ModelMessage } from "ai";
-import type { 
-    LoopInput, 
-    AgentLoopContext, 
+import type {
+    LoopInput,
+    AgentLoopContext,
     AgentLoopState,
     LoopDecision,
-    Session 
+    Session
 } from "@/session/type";
-import { 
-    SessionOps, 
-    SessionManager, 
+import {
+    SessionOps,
+    SessionManager,
     SessionContext,
-    defaultSessionManager 
+    defaultSessionManager
 } from "@/session/seesion";
 
 /**
@@ -23,7 +23,7 @@ import {
  * 3. Observation: 观察结果并决定下一步
  */
 export namespace AgentLoop {
-    
+
     /**
      * 主循环函数 - 外层 ReAct 循环
      * 
@@ -42,7 +42,7 @@ export namespace AgentLoop {
     export async function loop(input: LoopInput,
         sessionManager: SessionManager = defaultSessionManager) {
         // ============ 状态：INIT - 初始化 ============
-        
+
         // 1. 从 SessionManager 获取或创建 Session（包含所有历史消息）
         let session = await sessionManager.getOrCreate(
             input.sessionId,
@@ -71,7 +71,7 @@ export namespace AgentLoop {
         console.log(`[AgentLoop] 初始化 Session: ${input.sessionId}`);
         console.log(`[AgentLoop] 最大迭代次数: ${context.maxIterations}`);
         console.log(`[AgentLoop] 当前消息数: ${context.session.messages.length}`);
-        
+
         // 通知 observer：Loop 整体开始
         input.observer?.onLoopStart?.(input.sessionId);
 
@@ -104,18 +104,18 @@ export namespace AgentLoop {
 
             // ============ 状态：PLANNING - 规划 (Reasoning) ============
             if (context.state === "PLANNING") {
+                // 1. 进入新一轮 ReAct 循环，增加迭代计数
+                context.iteration++;
                 input.observer?.onStateChange?.(prevState, "PLANNING", context.iteration);
 
-                // 1. 检查是否达到最大迭代次数
-                if (context.iteration >= context.maxIterations) {
+                // 2. 检查是否达到最大迭代次数
+                if (context.iteration > context.maxIterations) {
                     // TODO 最后一次执行，强行要求llm返回最后的结果
                     console.log(`[AgentLoop] 达到最大迭代次数，退出`);
                     context.state = "COMPLETED";
                     continue;
                 }
 
-                // 2. 增加迭代计数
-                context.iteration++;
                 input.observer?.onIterationStart?.(context.iteration, context.maxIterations);
 
                 // 3. 检查是否需要压缩上下文
@@ -125,31 +125,11 @@ export namespace AgentLoop {
                     continue;
                 }
 
-                // 4. 首轮（iteration === 1）执行全局规划（Plan），后续轮执行即时推理（Reason）
-                //    结果写入 session，EXECUTING 阶段可以看到规划/推理内容
-                if (context.iteration === 1) {
-                    console.log(`[AgentLoop] 首轮：执行全局任务规划（Plan）`);
-                    const planResult = await Processor.plan({
-                        messages: [...context.session.messages],
-                        handlers: input.observer?.planHandlers,
-                    });
-                    context.session = await SessionContext.run(context.session, () =>
-                        Promise.resolve(processResutlToSession(planResult))
-                    );
-                    await sessionManager.save(context.session);
-                } else {
-                    console.log(`[AgentLoop] 第 ${context.iteration} 轮：基于观察进行即时推理（Reason）`);
-                    const reasonResult = await Processor.reason({
-                        messages: [...context.session.messages],
-                        handlers: input.observer?.reasonHandlers,
-                    });
-                    context.session = await SessionContext.run(context.session, () =>
-                        Promise.resolve(processResutlToSession(reasonResult))
-                    );                    
-                    await sessionManager.save(context.session);
-                }
-                console.log(`[AgentLoop] 开始规划第 ${context.iteration} 轮行动`);
-              
+                // 4. 最佳实践推荐：对于支持原生 Tool Calling 和思考模式的大模型，
+                // 应当直接在 Execute 阶段使用 maxSteps 完成单次流式输出，
+                // 强行分离独立的 plan / reason 会引发多余的调用甚至导致格式错乱。
+                console.log(`[AgentLoop] 第 ${context.iteration} 轮：规划阶段结束（交由 Execute 阶段原生推理）`);
+
                 // 5. 转换到 EXECUTING 状态
                 context.state = "EXECUTING";
                 continue;
@@ -201,10 +181,10 @@ export namespace AgentLoop {
                 // 1. 分析最后一条消息
                 const messages = context.session.messages;
                 const lastMessage = messages[messages.length - 1];
-                
+
                 // 2. 做出决策
                 const decision = makeDecision(context, lastMessage);
-                
+
                 console.log(`[AgentLoop] 决策结果: ${decision}`);
 
                 // 3. 根据决策转换状态
@@ -213,13 +193,13 @@ export namespace AgentLoop {
                         // 继续下一轮 ReAct 循环
                         context.state = "PLANNING";
                         break;
-                    
+
                     case "compact":
                         // 需要压缩上下文
                         context.needsCompaction = true;
                         context.state = "COMPACTING";
                         break;
-                    
+
                     case "stop":
                         // 任务完成
                         context.state = "COMPLETED";
@@ -240,10 +220,10 @@ export namespace AgentLoop {
                     context.session = SessionOps.compressMessages(context.session, keepCount);
 
                     console.log(`[AgentLoop] 压缩后消息数: ${context.session.messages.length}`);
-                    
+
                     // 保存压缩后的 Session
                     await sessionManager.save(context.session);
-                    
+
                     context.needsCompaction = false;
                     context.state = "PLANNING";
                 } catch (error) {
@@ -260,7 +240,7 @@ export namespace AgentLoop {
                 input.observer?.onStateChange?.(prevState, "COMPLETED", context.iteration);
                 console.log(`[AgentLoop] 循环完成，总迭代次数: ${context.iteration}`);
                 console.log(`[AgentLoop] 最终消息数: ${context.session.messages.length}`);
-                
+
                 // 更新元数据
                 context.session = SessionOps.incrementIterations(context.session, context.iteration);
                 await sessionManager.save(context.session);
@@ -280,7 +260,7 @@ export namespace AgentLoop {
                 input.observer?.onStateChange?.(prevState, "FAILED", context.iteration);
                 console.error(`[AgentLoop] 循环失败，迭代: ${context.iteration}`);
                 console.error(`[AgentLoop] 错误:`, context.error);
-                
+
                 // 尝试保存当前状态
                 try {
                     await sessionManager.save(context.session);

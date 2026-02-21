@@ -59,9 +59,25 @@ async function reason(input: ReasonInput): Promise<ProcessorStepResult> {
     const reasoningAgent = loadAndGetAgent().reasoning!;
     const session = SessionContext.current();
 
+    // 清理消息：reasoning agent 不执行工具调用，传入 tool-role 消息或 assistant 中的
+    // tool-call 块会导致部分模型（如 qwen）抛出 InvalidPromptError。
+    // 工具执行结果已通过 executor 的文本回复体现在对话上下文中，无需重复传递。
+    const cleanedMessages = messages
+        .filter((m) => m.role !== "tool")          // 去掉 tool-result 消息
+        .map((m) => {
+            if (m.role !== "assistant") return m;
+            if (!Array.isArray(m.content)) return m;
+            const textBlocks = m.content.filter((b: any) => b?.type === "text");
+            if (textBlocks.length === 0) return null;  // 纯 tool-call 消息直接丢弃
+            return { ...m, content: textBlocks };
+        })
+        .filter(Boolean) as typeof messages;
+
     const streamResult = await streamTextWrapper({
         agent: reasoningAgent,
-        messages: [...messages],
+        messages: cleanedMessages,
+        // reasoning 阶段完全不涉及工具，传 undefined 明确表示无工具
+        tools: undefined,
         maxRetries: 0,
     });
 

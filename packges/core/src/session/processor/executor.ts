@@ -124,6 +124,10 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                         topP:            input.topP,
                         maxRetries:      0,
                         abortSignal:     input.abortSignal,
+                        // 允许 SDK 完成完整的 LLM→工具→LLM 循环，避免 finishReason="tool-calls"
+                        // 触发外层 ReAct 循环重新进入 PLANNING，导致 Reasoner 收到
+                        // 残留 tool-result 消息而报 InvalidPromptError
+                        maxSteps:        5,
                     });
 
                     context.state = "STREAMING";
