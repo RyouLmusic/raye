@@ -5,7 +5,7 @@ import { SessionContext } from "@/session/seesion";
 import { processFullStream } from "@/session/stream-handler";
 import type { StreamHandlers } from "@/session/stream-handler";
 import type { PlanInput, ProcessorStepResult } from "@/session/type";
-import { buildAssistantMessage, sanitizeMessagesForNonToolAgent } from "@/session/processor/utils";
+import { buildAssistantMessage } from "@/session/processor/utils";
 
 export interface Planner {
     plan(input: PlanInput): Promise<ProcessorStepResult>;
@@ -25,18 +25,18 @@ const defaultPlanHandlers: StreamHandlers = {
     reasoning: {
         onStart: () => console.log("💭 [Planner] 开始推理..."),
         onDelta: (text) => { process.stdout.write(text); },
-        onEnd:   (full) => console.log("\n📋 [Planner] 规划推理完成"),
+        onEnd: (full) => console.log("\n📋 [Planner] 规划推理完成"),
     },
     text: {
         onStart: () => console.log("💡 [Planner] 输出规划结果..."),
         onDelta: (text) => { process.stdout.write(text); },
-        onEnd:   (full) => console.log(`\n📋 [Planner] 规划完成: ${full.substring(0, 80)}...`),
+        onEnd: (full) => console.log(`\n📋 [Planner] 规划完成: ${full.substring(0, 80)}...`),
     },
     tool: {
-        onCall:   (id, name, args)   => console.log(`🔧 [Planner] 工具调用: ${name}`, args),
+        onCall: (id, name, args) => console.log(`🔧 [Planner] 工具调用: ${name}`, args),
         onResult: (id, name, result) => console.log(`✅ [Planner] 工具返回 - ${name}:`, result),
     },
-    onError:  (err)    => console.error("❌ [Planner] 规划过程中发生错误:", err),
+    onError: (err) => console.error("❌ [Planner] 规划过程中发生错误:", err),
     onFinish: (result) => {
         console.log("🎉 [Planner] 规划流程结束");
         console.log("结束原因:", result.finishReason);
@@ -59,11 +59,10 @@ async function plan(input: PlanInput): Promise<ProcessorStepResult> {
     const session = SessionContext.current();
 
     // 清理消息：移除工具相关内容，因为 plan agent 不支持工具调用
-    const sanitizedMessages = sanitizeMessagesForNonToolAgent(messages);
 
     const streamResult = await streamTextWrapper({
         agent: planAgent,
-        messages: sanitizedMessages,
+        messages: [...messages],
         maxRetries: 0,
     });
 
