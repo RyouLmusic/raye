@@ -1,4 +1,4 @@
-import { generateText, streamText, type ModelMessage, type StreamTextResult } from "ai";
+import { generateText, streamText, stepCountIs, type ModelMessage, type StreamTextResult } from "ai";
 import { Provider } from "@/provider/provider.js";
 import type { StreamTextInput } from "@/session/type.js";
 import { createUnifiedStreamTransform } from "@/session/stream-transformer.js";
@@ -226,11 +226,11 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
         // ============ 高级控制参数 ============
         /**
          * stopWhen: 停止条件 (可选)
-         * 在有工具结果时的停止生成条件
-         * 可以是单个条件或条件数组
-         * 默认: stepCountIs(1)
+         * 在有工具结果时的停止生成条件，控制工具调用的最大轮次
+         * 通过 maxSteps 转换而来：maxSteps=N → stopWhen: stepCountIs(N)
+         * 默认: stepCountIs(1)（单步，不自动循环）
          */
-        // stopWhen: stepCountIs(1),
+        ...(input.maxSteps !== undefined && { stopWhen: stepCountIs(input.maxSteps) }),
 
         /**
          * prepareStep: 步骤准备函数 (可选)

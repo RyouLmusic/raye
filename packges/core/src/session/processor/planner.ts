@@ -3,10 +3,12 @@ import { streamTextWrapper } from "@/session/stream-text-wrapper";
 import { loadAndGetAgent } from "@/agent/agent";
 import { SessionContext } from "@/session/seesion";
 import { processFullStream } from "@/session/stream-handler";
-import { on } from "node:cluster";
+import type { StreamHandlers } from "@/session/stream-handler";
+import type { PlanInput, ProcessorStepResult } from "@/session/type";
+import { buildAssistantMessage } from "@/session/processor/utils";
 
 export interface Planner {
-    plan(messages: readonly ModelMessage[]): Promise<StreamTextResult<ToolSet, never>>;
+    plan(input: PlanInput): Promise<ProcessorStepResult>;
 }
 
 export function createPlanner(): Planner {
@@ -16,76 +18,77 @@ export function createPlanner(): Planner {
 }
 
 /**
- * 规划消息处理
- * @param messages 输入消息列表
- * @returns 规划结果的流
+ * 默认的 plan 阶段流式回调（降级到 console.log）
+ * 当外部未注入 handlers 时使用，保持原有的调试输出行为。
  */
-async function plan(messages: readonly ModelMessage[]): Promise<StreamTextResult<ToolSet, never>> {
+const defaultPlanHandlers: StreamHandlers = {
+    reasoning: {
+        onStart: () => console.log("💭 [Planner] 开始推理..."),
+        onDelta: (text) => { process.stdout.write(text); },
+        onEnd:   (full) => console.log("\n📋 [Planner] 规划推理完成"),
+    },
+    text: {
+        onStart: () => console.log("💡 [Planner] 输出规划结果..."),
+        onDelta: (text) => { process.stdout.write(text); },
+        onEnd:   (full) => console.log(`\n📋 [Planner] 规划完成: ${full.substring(0, 80)}...`),
+    },
+    tool: {
+        onCall:   (id, name, args)   => console.log(`🔧 [Planner] 工具调用: ${name}`, args),
+        onResult: (id, name, result) => console.log(`✅ [Planner] 工具返回 - ${name}:`, result),
+    },
+    onError:  (err)    => console.error("❌ [Planner] 规划过程中发生错误:", err),
+    onFinish: (result) => {
+        console.log("🎉 [Planner] 规划流程结束");
+        console.log("结束原因:", result.finishReason);
+        console.log("使用量:", result.usage);
+    },
+};
+
+/**
+ * 全局规划（首轮 PLANNING 阶段）
+ *
+ * 返回值中的 `message` 是已组装好的 assistant ModelMessage，
+ * 由 loop.ts 写入 Session，使后续 EXECUTING 阶段能看到规划内容。
+ *
+ * @param input.messages  完整消息历史（只读副本）
+ * @param input.handlers  外部注入的流式回调；未提供时降级到 defaultPlanHandlers
+ */
+async function plan(input: PlanInput): Promise<ProcessorStepResult> {
+    const { messages, handlers } = input;
     const planAgent = loadAndGetAgent().plan!;
     const session = SessionContext.current();
-    const result = await streamTextWrapper({
+
+    const streamResult = await streamTextWrapper({
         agent: planAgent,
         messages: [...messages],
-        maxRetries: 0, // 规划阶段不需要重试
+        maxRetries: 0,
     });
 
-    await processFullStream(result, {
-        handlers: {
-            reasoning: {
-                onStart: () => {
-                    console.log('💭 开始推理...');
-                },
-                onDelta: (text: string) => {
-                    console.log(text);
-                },
-                onEnd: (full: string) => {
-                    console.log('\n推理完成');
-                    console.log('📋 规划结果:', full);
-                }
-            },
-            text: {
-                onStart: () => {
-                    console.log('💭 开始推理...');
-                },
-                onDelta: (text: string) => {
-                    console.log(text);
-                },
-                onEnd: (full: string) => {
-                    console.log('\n推理完成');
-                    console.log('📋 规划结果:', full);
-                }
-            },
-            tool: {
-                onCall: (id, name, args) => {
-                    console.log('🔧 工具调用:', name);
-                    console.log('参数:', args);
-                },
-                onResult: (id: string, name: string, result: any) => {
-                    console.log(`🔧 工具调用返回 - ID: ${id}, Name: ${name}, Result:`, result);
-                }
-            },
-            step: {
-                onStart: (numbser) => {
-                    console.log(`➡️ 开始步骤 ${numbser}...`);
-                },
-                onEnd: (number) => {
-                    console.log(`✅ 步骤 ${number} 完成`);
-                }
-            },
-            onError: (err) => {
-                console.error('❌ 规划过程中发生错误:', err);
-            },
-            onFinish: (result) => {
-                console.log('🎉 规划流程结束');
-                console.log('最终结果:', result);
-                console.log('plan结果', result.text);
-                console.log('结束原因:', result.finishReason);
-                console.log('推理结果:', result.reasoning); 
-                console.log('使用量', result.usage);
-            }
+    // 捕获 LLM 完整输出（通过拦截 onFinish）
+    // onFinish 由 processFullStream 在流结束后调用，包含 text/reasoning/finishReason/usage
+    let captured: { text: string; reasoning: string; finishReason: string; usage?: unknown } = {
+        text: "",
+        reasoning: "",
+        finishReason: "stop",
+    };
+
+    const baseHandlers = handlers ?? defaultPlanHandlers;
+    const mergedHandlers: StreamHandlers = {
+        ...baseHandlers,
+        onFinish: async (result) => {
+            captured = { ...result };
+            // 同时透传给外部的 onFinish（如 TUI 的 usage 统计）
+            await baseHandlers.onFinish?.(result);
         },
-        debug: false
+    };
+
+    await processFullStream(streamResult, {
+        handlers: mergedHandlers,
+        debug: false,
     });
 
-    return result;
+    const { text, reasoning, finishReason, usage } = captured;
+    const message = buildAssistantMessage(text, reasoning);
+
+    return { text, reasoning, finishReason, usage, message };
 }

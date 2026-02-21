@@ -1,63 +1,20 @@
-import type { ProcessContext, StreamTextInput } from "@/session/type";
-import type { ModelMessage } from "ai";
+import type { StreamTextResult, ToolSet, ModelMessage } from "ai";
+import { streamTextWrapper } from "@/session/stream-text-wrapper";
+import { processFullStream } from "@/session/stream-handler";
+import type { StreamHandlers } from "@/session/stream-handler";
+import { SessionContext } from "@/session/seesion";
+import type {
+    ProcessContext,
+    ExecuteInput,
+    ProcessToolCall,
+    ToolExecutionResult,
+    ProcessorStepResult,
+} from "@/session/type";
+import { buildAssistantMessage } from "@/session/processor/utils";
+import { processResutlToSession } from ".";
 
-interface ToolCall {
-    id: string;
-    name: string;
-    args?: Record<string, unknown>;
-}
-
-interface RetryableErrorShape {
-    code?: string;
-    status?: number;
-    statusCode?: number;
-    message?: string;
-}
-
-/**
- * 执行结果接口
- */
-export interface ExecuteResult {
-    /** 是否成功 */
-    success: boolean;
-    /** LLM 生成的消息 */
-    message?: ModelMessage;
-    /** 工具调用列表 */
-    toolCalls?: ToolCall[];
-    /** 工具执行结果 */
-    toolResults?: ToolExecutionResult[];
-    /** 错误信息 */
-    error?: Error;
-}
-
-/**
- * 执行输入参数
- */
-export interface ExecuteInput extends StreamTextInput {
-    maxRetries?: number;
-    timeout?: number;
-}
-
-/**
- * 流式处理结果接口
- */
-interface StreamResult {
-    message: ModelMessage;
-    toolCalls?: ToolCall[];
-}
-
-export interface ToolExecutionResult {
-    toolCallId: string;
-    toolName: string;
-    content: string;
-    isError: boolean;
-}
-
-/**
- * 执行器能力定义
- */
 export interface Executor {
-    execute(input: ExecuteInput): Promise<ExecuteResult>;
+    execute(input: ExecuteInput): Promise<ProcessorStepResult>;
 }
 
 /**
@@ -69,344 +26,330 @@ export function createExecutor(): Executor {
     };
 }
 
-    /**
-     * 执行 LLM 调用 - 内层循环
-     * 
-     * 状态转换流程：
-     * IDLE → CALLING → STREAMING → [TOOL_EXECUTING] → SUCCESS
-     *          ↓ (on error)             ↓ (on error)
-     *       RETRYING ←───────────────────┘
-     *          ↓ (retry exhausted)
-     *        ERROR
-     * 
-     * @param input - 执行输入参数
-     * @returns 执行结果
-     */
-async function execute(input: ExecuteInput): Promise<ExecuteResult> {
-        // ============ 状态：IDLE - 初始化上下文 ============
-        const context: ProcessContext = {
-            state: "IDLE",
-            retryCount: 0,
-            maxRetries: input.maxRetries ?? 3,
-            retryDelay: 1000, // 初始延迟 1 秒
-        };
+// ============ 默认回调 ============
 
-        console.log(`[Process] 开始执行 LLM 调用`);
-        console.log(`[Process] 最大重试次数: ${context.maxRetries}`);
+/**
+ * 默认的 execute 阶段流式回调（降级到 console.log）
+ * 当外部未注入 streamHandlers 时使用，保持原有的调试输出行为。
+ */
+const defaultExecuteHandlers: StreamHandlers = {
+    reasoning: {
+        onStart: ()     => console.log("💭 [Executor] 开始推理..."),
+        onDelta: (text) => { process.stdout.write(text); },
+        onEnd:   ()     => console.log("\n⚡ [Executor] 推理完成"),
+    },
+    text: {
+        onStart: ()     => console.log("💡 [Executor] 输出响应..."),
+        onDelta: (text) => { process.stdout.write(text); },
+        onEnd:   (full) => console.log(`\n⚡ [Executor] 响应完成: ${full.substring(0, 80)}...`),
+    },
+    tool: {
+        onCall:   (id, name, args)   => console.log(`🔧 [Executor] 工具调用: ${name}`, args),
+        onResult: (id, name, result) => console.log(`✅ [Executor] 工具返回 - ${name}:`, result),
+    },
+    onError:  (err)    => console.error("❌ [Executor] 执行过程中发生错误:", err),
+    onFinish: (result) => {
+        console.log("🎉 [Executor] 执行流程结束");
+        console.log("结束原因:", result.finishReason);
+        console.log("使用量:", result.usage);
+    },
+};
 
-        // 结果存储
-        let result: ExecuteResult = {
-            success: false,
-        };
+// ============ 执行函数 ============
 
-        // ============ 主循环 - 处理重试 ============
-        while (true) {
-            console.log(`[Process] 状态: ${context.state}, 重试: ${context.retryCount}/${context.maxRetries}`);
+/**
+ * 执行 LLM 调用 - 内层循环
+ *
+ * 状态转换流程：
+ * IDLE → CALLING → STREAMING → SUCCESS
+ *          ↓ (on error)   ↓ (retryable / soft tool error)
+ *       RETRYING ←────────┘
+ *          ↓ (retry exhausted)
+ *        ERROR
+ *
+ * SDK 在 STREAMING 阶段自动执行工具并返回 tool-result 事件，
+ * 无需单独的 TOOL_EXECUTING 状态。
+ * 若工具返回软错误（{ error: ... }）且未超过重试次数 → RETRYING，
+ * 让 LLM 重新调用以尝试不同策略。
+ *
+ * @param input - 执行输入参数
+ * @returns 执行结果
+ */
+async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
+    // ── 初始化内层状态机上下文 ──────────────────────────────
+    const context: ProcessContext = {
+        state: "IDLE",
+        retryCount: 0,
+        maxRetries: input.maxRetries ?? 3,
+        retryDelay: 1000,
+    };
+    const session = SessionContext.current();
+    // 结果累积器（在 SUCCESS 状态组装为完整的 ProcessorStepResult）
+    const acc: {
+        text: string;
+        reasoning: string;
+        finishReason: string;
+        usage?: unknown;
+        message?: ReturnType<typeof buildAssistantMessage>;
+        toolCalls?: ProcessToolCall[];
+        toolResults?: ToolExecutionResult[];
+    } = { text: "", reasoning: "", finishReason: "stop" };
+    const messages = [...session.messages, ...input.messages];
+    // CALLING → STREAMING 之间共享的流对象
+    let streamResult: StreamTextResult<ToolSet, never> | undefined;
 
-            // ============ 状态：IDLE → CALLING ============
-            if (context.state === "IDLE") {
+    // ── 主循环 - 状态机驱动 ────────────────────────────────
+    while (true) {
+        switch (context.state) {
+
+            // ── IDLE → CALLING ──────────────────────────────────────
+            case "IDLE": {
                 context.state = "CALLING";
-                continue;
+                break;
             }
 
-            // ============ 状态：CALLING - 调用 LLM ============
-            if (context.state === "CALLING") {
-                console.log(`[Process] 发起 LLM API 调用`);
-
+            // ── CALLING - 发起 LLM API 调用 ─────────────────────────
+            case "CALLING": {
+                
                 try {
-                    // 1. 准备调用参数
-                    const callParams = prepareCallParams(input);
+                    // 将 ExecuteInput 字段映射到 StreamTextInput，再调用 streamTextWrapper
+                    // maxRetries: 0 —— 重试由状态机自身的 RETRYING 状态管理，不依赖 SDK 重试
+                    streamResult = await streamTextWrapper({
+                        agent:           input.agent,
+                        messages:        messages,
+                        tools:           input.tools,
+                        maxOutputTokens: input.maxOutputTokens,
+                        temperature:     input.temperature,
+                        topP:            input.topP,
+                        maxRetries:      0,
+                        abortSignal:     input.abortSignal,
+                    });
 
-                    // 2. 发起流式调用
-                    // const stream = await streamText(callParams);
-                    
-                    console.log(`[Process] LLM API 调用成功，开始流式处理`);
-
-                    // 3. 转换到 STREAMING 状态
                     context.state = "STREAMING";
-
-                    // 注意：这里我们暂时模拟，实际应该在 STREAMING 状态处理
-                    // 为了演示，这里直接跳到下一个状态
-                    
                 } catch (error) {
-                    console.error(`[Process] LLM API 调用失败:`, error);
                     context.error = error as Error;
-                    
-                    // 检查是否可以重试
-                    if (isRetryableError(error) && context.retryCount < context.maxRetries) {
-                        context.state = "RETRYING";
-                    } else {
-                        context.state = "ERROR";
-                    }
+                    context.state = isRetryableError(error) && context.retryCount < context.maxRetries
+                        ? "RETRYING"
+                        : "ERROR";
                 }
-                continue;
+                break;
             }
 
-            // ============ 状态：STREAMING - 处理流式输出 ============
-            if (context.state === "STREAMING") {
-                console.log(`[Process] 处理流式输出`);
-
+            // ── STREAMING - 处理流式输出 ─────────────────────────────
+            case "STREAMING": {
                 try {
-                    // 1. 处理流式事件
-                    const streamResult = await processStream(input);
+                    // 收集流过程中产生的工具调用和工具结果
+                    // SDK 会在流中自动执行工具并返回 tool-result 事件，无需手动执行
+                    const capturedToolCalls: ProcessToolCall[] = [];
+                    const capturedToolResults: ToolExecutionResult[] = [];
 
-                    // 2. 保存结果
-                    result.message = streamResult.message;
-                    result.toolCalls = streamResult.toolCalls;
+                    let captured = {
+                        text: "",
+                        reasoning: "",
+                        finishReason: "stop",
+                        usage: undefined as unknown,
+                    };
 
-                    // 3. 检查是否有工具调用
-                    if (streamResult.toolCalls && streamResult.toolCalls.length > 0) {
-                        console.log(`[Process] 检测到 ${streamResult.toolCalls.length} 个工具调用`);
-                        context.state = "TOOL_EXECUTING";
-                    } else {
-                        console.log(`[Process] 无工具调用，流式处理完成`);
-                        context.state = "SUCCESS";
-                    }
+                    // 合并外部 handlers 与 defaultExecuteHandlers（同 planner/reasoner 模式）
+                    const baseHandlers = input.streamHandlers ?? defaultExecuteHandlers;
+                    const mergedHandlers: StreamHandlers = {
+                        ...baseHandlers,
+                        tool: {
+                            // 在透传外部回调的同时，收集工具调用信息
+                            onCall: async (id, name, args) => {
+                                capturedToolCalls.push({ id, name, args });
+                                await baseHandlers.tool?.onCall?.(id, name, args);
+                            },
+                            // 收集 SDK 自动执行后的工具结果，同时检测软错误（工具返回了错误对象）
+                            onResult: async (id, name, result) => {
+                                const isError = result !== null &&
+                                    typeof result === "object" &&
+                                    "error" in result &&
+                                    typeof (result as Record<string, unknown>).error === "string";
+                                capturedToolResults.push({
+                                    toolCallId: id,
+                                    toolName:   name,
+                                    content:    JSON.stringify(result),
+                                    isError,
+                                });
+                                await baseHandlers.tool?.onResult?.(id, name, result);
+                            },
+                        },
+                        onFinish: async (res) => {
+                            captured.text         = res.text;
+                            captured.reasoning    = res.reasoning;
+                            captured.finishReason = res.finishReason;
+                            captured.usage        = res.usage;
+                            await baseHandlers.onFinish?.(res);
+                        },
+                    };
 
+                    await processFullStream(streamResult!, {
+                        handlers: mergedHandlers,
+                        debug: false,
+                    });
+
+                    // 组装 assistant message（含 reasoning 时使用数组格式）
+                    acc.text         = captured.text;
+                    acc.reasoning    = captured.reasoning;
+                    acc.finishReason = captured.finishReason;
+                    acc.usage        = captured.usage;
+                    acc.message      = buildAssistantMessage(captured.text, captured.reasoning);
+                    acc.toolCalls    = capturedToolCalls;
+                    acc.toolResults  = capturedToolResults;
+
+                    // 若工具结果中存在软错误（工具返回了 { error: ... }），触发 RETRYING
+                    // 让 LLM 重新发起调用以尝试不同的工具策略
+                    const hasToolErrors = capturedToolResults.some(r => r.isError);
+                    context.state = (hasToolErrors && context.retryCount < context.maxRetries)
+                        ? "RETRYING"
+                        : "SUCCESS";
                 } catch (error) {
-                    console.error(`[Process] 流式处理失败:`, error);
                     context.error = error as Error;
-
-                    // 检查是否可以重试
-                    if (isRetryableError(error) && context.retryCount < context.maxRetries) {
-                        context.state = "RETRYING";
-                    } else {
-                        context.state = "ERROR";
-                    }
+                    context.state = isRetryableError(error) && context.retryCount < context.maxRetries
+                        ? "RETRYING"
+                        : "ERROR";
                 }
-                continue;
+                break;
             }
 
-            // ============ 状态：TOOL_EXECUTING - 执行工具调用 ============
-            if (context.state === "TOOL_EXECUTING") {
-                console.log(`[Process] 执行工具调用`);
-
-                try {
-                    // 1. 执行所有工具调用
-                    const toolResults = await executeTools(result.toolCalls);
-
-                    // 2. 保存工具执行结果
-                    result.toolResults = toolResults;
-
-                    console.log(`[Process] 工具执行完成，结果数: ${toolResults.length}`);
-
-                    // 3. 转换到 SUCCESS 状态
-                    context.state = "SUCCESS";
-
-                } catch (error) {
-                    console.error(`[Process] 工具执行失败:`, error);
-                    context.error = error as Error;
-
-                    // 工具执行失败通常不重试 LLM 调用
-                    // 而是将错误作为工具结果返回，让 LLM 处理
-                    result.toolResults = [{
-                        toolCallId: "unknown",
-                        toolName: "unknown",
-                        content: `Tool execution error: ${(error as Error).message}`,
-                        isError: true,
-                    }];
-
-                    context.state = "SUCCESS";
-                }
-                continue;
-            }
-
-            // ============ 状态：RETRYING - 重试 ============
-            if (context.state === "RETRYING") {
+            // ── RETRYING - 指数退避后重新发起调用 ────────────────────
+            case "RETRYING": {
                 context.retryCount++;
-                
-                console.log(`[Process] 准备重试 (${context.retryCount}/${context.maxRetries})`);
-                console.log(`[Process] 延迟 ${context.retryDelay}ms 后重试`);
 
-                // 1. 等待一段时间后重试（指数退避）
+                // 将本轮产生的 assistant message 和 tool-result 追加到 messages，
+                // 让 LLM 在重试时能看到上一轮的输出和工具执行结果
+                if (acc.toolCalls && acc.toolCalls.length > 0) {
+                    const baseContent = acc.message
+                        ? (Array.isArray(acc.message.content)
+                            ? [...(acc.message.content as object[])]
+                            : acc.message.content
+                            ? [{ type: "text" as const, text: acc.message.content as string }]
+                            : [])
+                        : [];
+                    const toolCallBlocks = acc.toolCalls.map((tc) => ({
+                        type: "tool-call" as const,
+                        toolCallId: tc.id,
+                        toolName: tc.name,
+                        args: tc.args ?? {},
+                    }));
+                    const assistantMsg = {
+                        role: "assistant" as const,
+                        content: [...baseContent, ...toolCallBlocks],
+                    } as ModelMessage;
+                    messages.push(assistantMsg);
+
+                    if (acc.toolResults && acc.toolResults.length > 0) {
+                        const toolResultMsgs: ModelMessage[] = acc.toolResults.map((tr) => ({
+                            role: "tool" as const,
+                            content: [{
+                                type: "tool-result" as const,
+                                toolCallId: tr.toolCallId,
+                                toolName: tr.toolName,
+                                output: JSON.parse(tr.content),
+                            }],
+                        }));
+                        messages.push(...toolResultMsgs);
+                    }
+                } else if (acc.message) {
+                    // 无工具调用，仅追加 assistant 文本消息
+                    messages.push(acc.message);
+                }
+
+                // 重置累积器，准备下一轮
+                // acc.text = "";
+                // acc.reasoning = "";
+                // acc.finishReason = "stop";
+                // acc.usage = undefined;
+                // acc.message = undefined;
+                // acc.toolCalls = undefined;
+                // acc.toolResults = undefined;
+
+                // 指数退避，最大 10 秒
                 await sleep(context.retryDelay);
-                
-                // 2. 增加下次重试的延迟时间（指数退避策略）
-                context.retryDelay = Math.min(context.retryDelay * 2, 10000); // 最大 10 秒
+                context.retryDelay = Math.min(context.retryDelay * 2, 10_000);
 
-                // 3. 转换回 CALLING 状态
                 context.state = "CALLING";
-                continue;
+                break;
             }
 
-            // ============ 状态：SUCCESS - 成功 ============
-            if (context.state === "SUCCESS") {
-                console.log(`[Process] 执行成功`);
-                
-                result.success = true;
-                return result;
+            // ── SUCCESS - 返回结果 ────────────────────────────────────
+            case "SUCCESS": {
+                return {
+                    text:         acc.text,
+                    reasoning:    acc.reasoning,
+                    finishReason: acc.finishReason,
+                    usage:        acc.usage,
+                    message:      acc.message!,
+                    toolCalls:    acc.toolCalls,
+                    toolResults:  acc.toolResults,
+                };
             }
 
-            // ============ 状态：ERROR - 失败 ============
-            if (context.state === "ERROR") {
-                console.error(`[Process] 执行失败，已尝试 ${context.retryCount} 次`);
-                console.error(`[Process] 错误:`, context.error);
-
-                result.success = false;
-                result.error = context.error;
-                
-                // 抛出错误，让外层循环处理
+            // ── ERROR - 抛出错误，由外层循环处理 ─────────────────────
+            case "ERROR": {
                 throw context.error;
             }
 
-            // 不应该到达这里
-            throw new Error(`[Process] 未知状态: ${context.state}`);
+            default: {
+                throw new Error(`[Executor] 未知状态: ${context.state}`);
+            }
         }
     }
-
-    /**
-     * 准备 LLM 调用参数
-     */
-function prepareCallParams(input: ExecuteInput) {
-    return {
-        model: input.agent.model,
-        messages: input.messages,
-        tools: input.tools,
-        maxTokens: input.maxOutputTokens,
-        temperature: input.temperature,
-        topP: input.topP,
-        // ... 其他参数
-    };
 }
 
-    /**
-     * 处理流式输出
-     * 
-     * 监听各种流式事件：
-     * - text-delta: 文本增量
-     * - tool-call: 工具调用
-     * - tool-result: 工具结果
-     * - finish: 流结束
-     * - error: 错误
-     */
-async function processStream(input: ExecuteInput): Promise<StreamResult> {
-    // 这里应该调用真实的 streamText 函数
-    // 并监听各种事件
+// ============ 工具函数 ============
 
-    // 模拟流式处理
-    return new Promise<StreamResult>((resolve, reject) => {
-        // 模拟 LLM 响应
-        const mockMessage: ModelMessage = {
-            role: "assistant",
-            content: "This is a mock response",
-        };
-
-        // 模拟流式事件处理
-        // stream.on('text-delta', (delta) => { ... });
-        // stream.on('tool-call', (toolCall) => { ... });
-        // stream.on('finish', () => { ... });
-        // stream.on('error', (error) => { ... });
-
-        // 模拟成功
-        setTimeout(() => {
-            resolve({
-                message: mockMessage,
-                toolCalls: [],
-            });
-        }, 100);
-    });
-}
-
-    /**
-     * 执行工具调用
-     */
-async function executeTools(toolCalls?: ToolCall[]): Promise<ToolExecutionResult[]> {
-    if (!toolCalls || toolCalls.length === 0) {
-        return [];
-    }
-
-    console.log(`[Process] 执行 ${toolCalls.length} 个工具`);
-
-    const results: ToolExecutionResult[] = [];
-
-    for (const toolCall of toolCalls) {
-        try {
-            // 1. 查找并执行工具
-            // const tool = findTool(toolCall.name);
-            // const result = await tool.execute(toolCall.args);
-
-            // 2. 模拟工具执行
-            const result: ToolExecutionResult = {
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                content: JSON.stringify({ success: true }),
-                isError: false,
-            };
-
-            results.push(result);
-            console.log(`[Process] 工具 ${toolCall.name} 执行成功`);
-
-        } catch (error) {
-            console.error(`[Process] 工具 ${toolCall.name} 执行失败:`, error);
-
-            // 将错误作为工具结果
-            const toolErrorResult: ToolExecutionResult = {
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                content: JSON.stringify({
-                    error: (error as Error).message,
-                }),
-                isError: true,
-            };
-            results.push(toolErrorResult);
-        }
-    }
-
-    return results;
-}
-
-    /**
-     * 判断错误是否可以重试
-     * 
-     * 可重试的错误类型：
-     * - 网络错误 (Network error, ECONNREFUSED, ETIMEDOUT)
-     * - 超时错误 (Timeout)
-     * - 限流错误 (Rate limit, 429)
-     * - 服务器错误 (500, 502, 503, 504)
-     * 
-     * 不可重试的错误类型：
-     * - 认证错误 (401, 403)
-     * - 请求错误 (400, 404)
-     * - 业务逻辑错误
-     */
+/**
+ * 判断错误是否可以重试
+ *
+ * 可重试：
+ *   - 网络错误 (ECONNREFUSED / ETIMEDOUT / ENOTFOUND)
+ *   - 限流     (429)
+ *   - 服务器故障 (500 / 502 / 503 / 504)
+ *   - 超时关键字
+ *
+ * 不可重试：
+ *   - 认证错误 (401 / 403)
+ *   - 请求错误 (400 / 404)
+ *   - 业务逻辑错误
+ */
 function isRetryableError(error: unknown): boolean {
     if (!error) return false;
 
     const err = error as RetryableErrorShape;
 
-    // 1. 检查网络错误
-    if (err.code === "ECONNREFUSED" || 
-        err.code === "ETIMEDOUT" || 
+    if (err.code === "ECONNREFUSED" ||
+        err.code === "ETIMEDOUT"    ||
         err.code === "ENOTFOUND") {
         return true;
     }
 
-    // 2. 检查 HTTP 状态码
-    if (err.status || err.statusCode) {
-        const status = err.status || err.statusCode;
-
-        // 可重试的状态码
-        if (status === 429 ||  // Rate limit
-            status === 500 ||  // Internal server error
-            status === 502 ||  // Bad gateway
-            status === 503 ||  // Service unavailable
-            status === 504) {  // Gateway timeout
-            return true;
-        }
-    }
-
-    // 3. 检查超时错误
-    if (err.message && err.message.toLowerCase().includes("timeout")) {
+    const status = err.status ?? err.statusCode;
+    if (status === 429 ||
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504) {
         return true;
     }
 
-    // 默认不重试
+    if (err.message?.toLowerCase().includes("timeout")) {
+        return true;
+    }
+
     return false;
 }
 
-    /**
-     * 延迟函数
-     */
 function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ── 内部辅助类型 ──────────────────────────────────────────────────
+
+interface RetryableErrorShape {
+    code?: string;
+    status?: number;
+    statusCode?: number;
+    message?: string;
 }

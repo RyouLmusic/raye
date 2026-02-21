@@ -13,7 +13,7 @@
             "clear_thinking": false
         },
         "prompt": "{PLAN_PROMPT}",
-        "max_output_tokens": 2048,
+        "max_output_tokens": 16384,
         "temperature": 0.7,
         "top_p": 0.9,
         "max_retries": 3,
@@ -34,11 +34,11 @@
             "enable_thinking": true
         },
         "prompt": "{AGENT_PROMPT}",
-        "max_output_tokens": 2048,
+        "max_output_tokens": 16384,
         "temperature": 0.7,
         "top_p": 0.9,
         "max_retries": 3,
-        "timeout": 10000,
+        "timeout": 600000,
         "tools": ["calculate"],
         "mcp": {}
     },
@@ -55,11 +55,11 @@
             "enable_thinking": true
         },
         "prompt": "{SUMMARY_PROMPT}",
-        "max_output_tokens": 2048,
+        "max_output_tokens": 16384,
         "temperature": 0.7,
         "top_p": 0.9,
         "max_retries": 3,
-        "timeout": 10000,
+        "timeout": 600000,
         "tools": ["calculate"],
         "mcp": {}
     },
@@ -76,11 +76,33 @@
             "reasoning_split": false
         },
         "prompt": "{COMPACTION_PROMPT}",
-        "max_output_tokens": 2048,
+        "max_output_tokens": 16384,
         "temperature": 0.7,
         "top_p": 0.9,
         "max_retries": 3,
-        "timeout": 10000,
+        "timeout": 600000,
+        "tools": [],
+        "mcp": {}
+    },
+    {
+        "name": "reasoning",
+        "version": "1.0.0",
+        "description": "ReAct 模式下每轮循环的即时推理，基于当前观察决定下一步单一行动。",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "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",
+        "model": "z-ai/glm5",
+        "model_id": "glm5",
+        "provider": "ZhipuAI",
+        "extra_body": {
+            "enable_thinking": true,
+            "clear_thinking": false
+        },
+        "prompt": "{REASONING_PROMPT}",
+        "max_output_tokens": 16384,
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "max_retries": 0,
+        "timeout": 60000,
         "tools": [],
         "mcp": {}
     },
@@ -103,7 +125,7 @@
         "temperature": 0.7,
         "top_p": 0.9,
         "max_retries": 3,
-        "timeout": 10000,
+        "timeout": 640000,
         "tools": ["calculate"],
         "mcp": {}
     }

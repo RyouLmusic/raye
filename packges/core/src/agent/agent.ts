@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import PLAN_PROMPT from "@/agent/prompt/plan.txt";
 import AGENT_PROMPT from "@/agent/prompt/agent.txt";
 import SUMMARY_PROMPT from "@/agent/prompt/summary.txt";
+import REASONING_PROMPT from "@/agent/prompt/reasoning.txt";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export function loadAndGetAgent(): Record<string, AgentConfig> {
@@ -28,7 +29,8 @@ export function loadAndGetAgent(): Record<string, AgentConfig> {
     const promptMap: Record<string, string> = {
         '{PLAN_PROMPT}': PLAN_PROMPT,
         '{AGENT_PROMPT}': AGENT_PROMPT,
-        '{SUMMARY_PROMPT}': SUMMARY_PROMPT
+        '{SUMMARY_PROMPT}': SUMMARY_PROMPT,
+        '{REASONING_PROMPT}': REASONING_PROMPT,
     };
     
     // 将 agentConfig 中的 prompt 字段替换为对应的文本内容

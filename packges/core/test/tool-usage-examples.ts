@@ -19,7 +19,8 @@ async function useConfiguredToolsFullStream() {
                 role: 'user',
                 content: '请帮我计算 123 加 456 和 234 乘以 456 等于多少？并且给出答案的详细步骤'
             }
-        ]
+        ],
+        maxSteps: 2,  // 允许多轮工具调用，展示完整思考和工具交互过程
     });
 
     console.log("📝 流式输出（包含思考过程和工具调用）:");

@@ -1,0 +1,19 @@
+{
+  "name": "ui",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "ai": "^6.0.84",
+    "ink": "^5.1.0",
+    "react": "^18.3.1",
+    "core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^18.3.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

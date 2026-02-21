@@ -30,12 +30,12 @@ async function testBasicReActLoop() {
             max_retries: 3,
             timeout: 30000,
         },
-        initialMessages: [
+        message: 
             {
                 role: "user",
                 content: "请帮我计算 123 + 456"
             }
-        ],
+        ,
         maxIterations: 5,
         compactThreshold: 20,
     };
