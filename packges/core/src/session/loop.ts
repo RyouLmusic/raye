@@ -133,7 +133,9 @@ export namespace AgentLoop {
                         messages: [...context.session.messages],
                         handlers: input.observer?.planHandlers,
                     });
-                    processResutlToSession(planResult);
+                    context.session = await SessionContext.run(context.session, () =>
+                        Promise.resolve(processResutlToSession(planResult))
+                    );
                     await sessionManager.save(context.session);
                 } else {
                     console.log(`[AgentLoop] 第 ${context.iteration} 轮：基于观察进行即时推理（Reason）`);
@@ -141,7 +143,9 @@ export namespace AgentLoop {
                         messages: [...context.session.messages],
                         handlers: input.observer?.reasonHandlers,
                     });
-                    processResutlToSession(reasonResult);                    
+                    context.session = await SessionContext.run(context.session, () =>
+                        Promise.resolve(processResutlToSession(reasonResult))
+                    );                    
                     await sessionManager.save(context.session);
                 }
                 console.log(`[AgentLoop] 开始规划第 ${context.iteration} 轮行动`);
@@ -165,7 +169,9 @@ export namespace AgentLoop {
                         timeout: input.agentConfig.timeout,
                         streamHandlers: input.observer?.executeHandlers,
                     });
-                    processResutlToSession(executeResult);
+                    context.session = await SessionContext.run(context.session, () =>
+                        Promise.resolve(processResutlToSession(executeResult))
+                    );
                     // 保存执行元数据，供 makeDecision 使用
                     context.lastFinishReason = executeResult.finishReason;
                     context.lastToolCallCount = executeResult.toolCalls?.length ?? 0;

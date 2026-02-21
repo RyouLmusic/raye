@@ -18,6 +18,15 @@ export const agentConfig = z.object({
     max_retries: z.number().optional(),
     timeout: z.number().optional(),  // 超时时间，单位为毫秒
     tools: z.array(z.string()).default([]),  // 字符串数组（工具名称）
+    tool_choice: z.union([
+        z.literal('auto'),
+        z.literal('required'),
+        z.literal('none'),
+        z.object({
+            type: z.literal('tool'),
+            toolName: z.string()
+        })
+    ]).optional(),  // 工具选择策略
     mcp: z.record(z.string(), z.any()).default({})
 });
 

@@ -30,11 +30,11 @@ async function testBasicReActLoop() {
             max_retries: 3,
             timeout: 30000,
         },
-        message: 
-            {
-                role: "user",
-                content: "请帮我计算 123 + 456"
-            }
+        message:
+        {
+            role: "user",
+            content: "请帮我计算 123 + 456"
+        }
         ,
         maxIterations: 5,
         compactThreshold: 20,
@@ -42,7 +42,7 @@ async function testBasicReActLoop() {
 
     try {
         const result = await AgentLoop.loop(input);
-        
+
         if (result.success) {
             console.log("\n✅ 测试成功！");
             console.log(`📊 迭代次数: ${result.iterations}`);
@@ -91,14 +91,14 @@ async function testLoopWithTools() {
 
     try {
         const result = await AgentLoop.loop(input);
-        
+
         if (result.success) {
             console.log("\n✅ 测试成功！");
             console.log(`📊 迭代次数: ${result.iterations}`);
             console.log(`💬 消息数量: ${result.messages.length}`);
-            
+
             // 统计工具调用
-            const toolCalls = result.messages.filter(m => 
+            const toolCalls = result.messages.filter(m =>
                 m.role === "assistant" && m.toolCalls?.length > 0
             );
             console.log(`🔧 工具调用次数: ${toolCalls.length}`);
@@ -154,7 +154,7 @@ async function testContextCompaction() {
 
     try {
         const result = await AgentLoop.loop(input);
-        
+
         if (result.success) {
             console.log("\n✅ 测试成功！");
             console.log(`📊 迭代次数: ${result.iterations}`);
@@ -205,7 +205,7 @@ async function testMaxIterations() {
 
     try {
         const result = await AgentLoop.loop(input);
-        
+
         console.log("\n✅ 测试完成！");
         console.log(`📊 迭代次数: ${result.iterations}`);
         console.log(`🛑 是否达到限制: ${result.iterations >= input.maxIterations ? "是" : "否"}`);
@@ -220,12 +220,12 @@ async function runAllTests() {
     console.log("╔════════════════════════════════════════════╗");
     console.log("║   Agent Loop 状态机测试套件               ║");
     console.log("╚════════════════════════════════════════════╝");
-    
+
     await testBasicReActLoop();
     await testLoopWithTools();
     await testContextCompaction();
     await testMaxIterations();
-    
+
     console.log("\n");
     console.log("╔════════════════════════════════════════════╗");
     console.log("║   所有测试完成                             ║");

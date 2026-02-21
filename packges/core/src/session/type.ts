@@ -24,6 +24,10 @@ export type StreamTextInput<TOOLS extends ToolSet = ToolSet> = {
     /** 系统消息（可选）- 用于设置 AI 助手的角色和行为准则 */
     system?: string[];
     
+    // ============ 工具相关参数 ============
+    /** 工具选择策略（可选）- 控制模型如何选择使用工具，可选值: 'auto' | 'required' | 'none' | { type: 'tool', toolName: string } */
+    toolChoice?: 'auto' | 'required' | 'none' | { type: 'tool'; toolName: string };
+    
     // ============ 生成控制参数 ============
     /** 最大输出令牌数（可选）- 限制生成文本的最大长度 */
     maxOutputTokens?: number;
@@ -409,6 +413,10 @@ export interface ExecuteInput {
     messages: ModelMessage[];
     /** 工具集合（可选） */
     tools?: ToolSet;
+
+    // ── 工具相关 ──────────────────────────────────
+    /** 工具选择策略（可选）- 控制模型如何选择使用工具 */
+    toolChoice?: 'auto' | 'required' | 'none' | { type: 'tool'; toolName: string };
 
     // ── 生成控制 ──────────────────────────────────
     maxOutputTokens?: number;

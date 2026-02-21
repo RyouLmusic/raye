@@ -118,6 +118,7 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                         agent:           input.agent,
                         messages:        messages,
                         tools:           input.tools,
+                        toolChoice:      input.toolChoice,
                         maxOutputTokens: input.maxOutputTokens,
                         temperature:     input.temperature,
                         topP:            input.topP,

@@ -283,6 +283,8 @@ export function useAgentLoop(agentConfig: AgentConfig, sessionId: string) {
                 agentConfig,
                 message: userMsg,
                 observer: buildObserver(),
+                maxIterations: 10,
+                compactThreshold: 20,
             });
         } catch (err) {
             setState(s => ({

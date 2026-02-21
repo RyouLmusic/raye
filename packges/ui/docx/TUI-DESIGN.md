@@ -1,245 +1,195 @@
-# TUI 设计方案：将 executeLoop 输出接入终端交互界面
+# TUI 设计方案：将 AgentLoop 输出接入终端交互界面
+
+> **文档版本**：v2（2026-02）  
+> **状态**：与当前实现对齐 — 所有章节均反映已落地的代码，不含待议 TODO
+
+---
 
 ## 1. 目标
 
-将 `AgentLoop.executeLoop` 产生的所有 AI 输出（streaming 文本、推理过程、工具调用）实时展示在 TUI 中，并在每轮 Loop 结束后通过 TUI 接受用户的下一轮输入，维持持续的终端对话体验。
+将 `AgentLoop.loop` 产生的所有 AI 输出（streaming 文本、推理过程、工具调用）实时展示在 TUI 中，  
+并在每轮 Loop 结束后通过 TUI 接受用户的下一轮输入，维持持续的终端对话体验。
 
 ---
 
-## 2. 现有架构分析
+## 2. 现有架构
 
 ```
-LoopInput
+LoopInput（含 observer? + message + agentConfig + maxIterations ...）
    │
    ▼
 AgentLoop.loop()              ← 外层 ReAct 状态机
-   │  PLANNING → EXECUTING → OBSERVING → COMPACTING → COMPLETED/FAILED
+   │  INIT → PLANNING → EXECUTING → OBSERVING → COMPACTING → COMPLETED/FAILED
    │
-   ▼
-Processor.execute()           ← 内层 LLM 状态机
-   │  CALLING → STREAMING → TOOL_EXECUTING → SUCCESS/ERROR
-   │
-   ▼
-processFullStream()           ← StreamHandlers 回调系统
-       reasoning.onDelta
-       text.onDelta
-       tool.onCall / onResult
-       onFinish / onError
+   ├─ [PLANNING, iter=1]  → Processor.plan(PlanInput)      → processFullStream
+   ├─ [PLANNING, iter>1]  → Processor.reason(ReasonInput)  → processFullStream
+   └─ [EXECUTING]         → Processor.execute(ExecuteInput) → processFullStream
+                                    ↓
+                          processResutlToSession()   ← 将 ProcessorStepResult 写入 Session
 ```
 
-**关键约束：**
+**关键约束**
 
-- `processFullStream` 已经用回调（`StreamHandlers`）暴露所有流式事件，是天然的 UI 接入点。  
-- `executeLoop` 目前所有输出都走 `console.log`，没有结构化事件总线。  
-- `LoopInput` 是整个循环的唯一外部输入，是最干净的扩展位置。  
-- `AgentLoop.loop()` 返回 `Promise`，在 resolve 之前 TUI 需要保持渲染，resolve 之后等待用户下一次输入。
+| 约束点 | 说明 |
+|--------|------|
+| `StreamHandlers` | `processFullStream` 的唯一 UI 接入点，包含 `reasoning / text / tool / step / onError / onFinish` 六个子处理器 |
+| `LoopObserver` | TUI 注入到 `LoopInput.observer`，按阶段分组（`planHandlers / reasonHandlers / executeHandlers`） + Loop 级别事件 |
+| `Processor` 是无状态单例 | handlers 必须随调用栈传入，不能存在 Processor 内部（见 §3.3） |
+| `processResutlToSession` | Processor 返回 `ProcessorStepResult`，由 `loop.ts` 负责写入 Session；两者职责界清 |
+| `SessionContext` | `loop.ts` 建立 Session 执行边界，Processor 通过 `SessionContext.current()` 只读访问 |
 
 ---
 
-## 3. 核心设计：LoopObserver 接口（修订版）
-
-### 3.0 设计问题诊断
-
-一个完整的 Loop 迭代实际包含 **三次独立的 LLM 调用**，每次都有自己的 `processFullStream`：
-
-```
-PLANNING (iter=1)  → Processor.plan()    → processFullStream  [hardcoded console.log]
-PLANNING (iter>1)  → Processor.reason()  → processFullStream  [hardcoded console.log]
-EXECUTING          → Processor.execute() → processFullStream  [hardcoded console.log]
-```
-
-原始设计将所有流式回调打平在 `LoopObserver` 一级，存在两个根本缺陷：
-
-1. **语义混淆**：`onTextDelta` 无法区分当前是 plan/reason/execute 哪个阶段在输出，TUI 无法差异化渲染。
-2. **注入路径缺失**：`Processor.plan(messages)` 和 `Processor.reason(messages)` 的签名不接受 `StreamHandlers`，observer 的 streaming 回调根本无从注入，只能继续走 hardcoded `console.log`。
-
-修订后的设计同时解决这两个问题。
+## 3. 核心设计：LoopObserver 接口（已实现）
 
 ### 3.1 为什么选择 Observer 而不是 EventEmitter 或 RxJS？
 
 | 方案 | 优点 | 缺点 |
 |------|------|------|
-| **LoopObserver 接口（本方案）** | 与现有 `StreamHandlers` 风格一致；无额外依赖；TypeScript 类型完善 | - |
-| EventEmitter | Node.js 原生，松耦合 | 丢失类型安全；事件名字符串容易写错 |
-| RxJS Observable | 强大的流操作符 | 引入重依赖；overkill |
+| **LoopObserver（本方案）** | 与 `StreamHandlers` 风格一致；无额外依赖；TypeScript 类型完善 | — |
+| EventEmitter | Node.js 原生，松耦合 | 丢失类型安全；事件名字符串易出错 |
+| RxJS Observable | 强大流操作符 | 重依赖；overkill |
 
-### 3.2 修订后的 LoopObserver 接口定义
-
-**核心思路**：`LoopObserver` 的流式回调段直接复用 `StreamHandlers` 类型，并按 processor 阶段分组。每个阶段对应一个独立的 `StreamHandlers`，可以在 TUI 侧差异化渲染。
-
-在 `packges/core/src/session/type.ts` 追加：
+### 3.2 LoopObserver 接口（`core/src/session/type.ts`）
 
 ```typescript
-import type { StreamHandlers } from "@/session/stream-handler";
-
-/**
- * Loop 事件观察者接口
- * TUI / CLI / 其他 UI 层实现此接口，注入到 LoopInput 中
- * 所有方法均为可选，按需实现
- */
 export interface LoopObserver {
-  // ── 外层状态机事件 ──────────────────────────────────────
-  /** Loop 整体开始 */
+  // ── 外层状态机生命周期 ────────────────────────────────
+  /** Loop 整体开始（session 已就绪，首条消息已写入） */
   onLoopStart?: (sessionId: string) => void;
-  /** 状态发生转换 */
+  /** 外层状态机发生状态转换 */
   onStateChange?: (from: AgentLoopState, to: AgentLoopState, iteration: number) => void;
-  /** 每轮迭代开始 */
+  /** 每轮迭代开始（iteration 从 1 计数） */
   onIterationStart?: (iteration: number, maxIterations: number) => void;
   /** 每轮迭代结束 */
   onIterationEnd?: (iteration: number) => void;
-  /** Loop 整体完成 */
+  /** Loop 整体结束（成功或失败） */
   onLoopEnd?: (result: { success: boolean; iterations: number; error?: Error }) => void;
-  /** 错误（带发生时的 Loop 状态） */
+  /** 任意阶段发生错误 */
   onError?: (error: Error, state: AgentLoopState) => void;
 
-  // ── 按 Processor 阶段分组的流式回调 ──────────────────────
-  /**
-   * 首轮全局规划（PLANNING iter=1）的流式回调
-   * 对应 Processor.plan() → processFullStream
-   * TUI 建议展示为「折叠的 Thinking 块」
-   */
+  // ── 按 Processor 阶段分组的流式回调 ─────────────────
+  /** 首轮全局规划（PLANNING iter=1）→ TUI 渲染为折叠 ThinkingBlock */
   planHandlers?: StreamHandlers;
-
-  /**
-   * 后续轮即时推理（PLANNING iter>1）的流式回调
-   * 对应 Processor.reason() → processFullStream
-   * TUI 建议展示为「折叠的 Thinking 块」（与 plan 相同样式）
-   */
+  /** 后续轮即时推理（PLANNING iter>1）→ TUI 渲染为折叠 ThinkingBlock */
   reasonHandlers?: StreamHandlers;
-
-  /**
-   * 主执行阶段（EXECUTING）的流式回调
-   * 对应 Processor.execute() → processFullStream
-   * TUI 展示为「主回复区」，工具调用展示为独立 ToolCallLog 条目
-   */
+  /** 主执行阶段（EXECUTING）→ TUI 渲染为主回复区 + ToolCallLog */
   executeHandlers?: StreamHandlers;
 }
 ```
 
-在 `LoopInput` 中增加可选字段：
+`LoopInput` 中增加可选字段（已实现）：
 
 ```typescript
-export type LoopInput = {
-  // ... 原有字段不变 ...
-  /** 可选的 UI 观察者，注入后 Loop 会在关键节点回调 */
+export type LoopInput = z.infer<typeof loopInput> & {
   observer?: LoopObserver;
 };
+// loopInput schema 包含：sessionId / agentConfig / message / maxIterations / compactThreshold / maxTokens
 ```
 
-### 3.3 Planner / Reasoner 接口需同步修改
+### 3.3 Processor 输入类型（已实现）
 
-`plan()` 和 `reason()` 当前签名不接受 `StreamHandlers`，需要扩展：
+三个阶段的输入类型均已在 `type.ts` 定义，`handlers` 为可选字段：
 
 ```typescript
-// packges/core/src/session/processor/planner.ts
+// PlanInput — 首轮全局规划
+export type PlanInput = z.infer<typeof planInput> & {
+  handlers?: StreamHandlers;  // 未提供时降级到 defaultPlanHandlers
+};
+
+// ReasonInput — 后续轮即时推理
+export type ReasonInput = z.infer<typeof reasonInput> & {
+  handlers?: StreamHandlers;  // 未提供时降级到 defaultReasonHandlers
+};
+
+// ExecuteInput — 主执行阶段
+export interface ExecuteInput {
+  agent: AgentConfig;
+  messages: ModelMessage[];
+  tools?: ToolSet;
+  maxOutputTokens?: number;
+  temperature?: number;
+  topP?: number;
+  maxRetries?: number;
+  timeout?: number;
+  abortSignal?: AbortSignal;
+  streamHandlers?: StreamHandlers;  // 未提供时降级到 defaultExecuteHandlers
+}
+```
+
+**降级保障**：`handlers` 未注入时，各 Processor 内部使用 `defaultXxxHandlers`（console.log 输出），保持后向兼容，不影响现有测试。
+
+### 3.4 Planner 接口签名（已实现）
+
+`Planner.plan(input: PlanInput)` 接受 **单个对象参数**（而非两个独立参数）：
+
+```typescript
 export interface Planner {
-  plan(
-    messages: readonly ModelMessage[],
-    handlers?: StreamHandlers   // 新增：允许外部注入回调
-  ): Promise<StreamTextResult<ToolSet, never>>;
-}
-
-// packges/core/src/session/processor/reasoner.ts
-export interface Reasoner {
-  reason(
-    messages: readonly ModelMessage[],
-    handlers?: StreamHandlers   // 新增：允许外部注入回调
-  ): Promise<StreamTextResult<ToolSet, never>>;
+  plan(input: PlanInput): Promise<ProcessorStepResult>;
 }
 ```
 
-实现内部逻辑：`handlers` 有值时使用外部传入的 handlers，没有时降级到原有的 `console.log` handlers（保持后向兼容）：
+内部通过 `mergedHandlers` 拦截 `onFinish` 来捕获完整输出，同时透传给外部的 `onFinish`：
 
 ```typescript
-async function plan(
-  messages: readonly ModelMessage[],
-  handlers?: StreamHandlers
-): Promise<StreamTextResult<ToolSet, never>> {
-  const result = await streamTextWrapper({ agent: planAgent, messages: [...messages] });
-
-  await processFullStream(result, {
-    handlers: handlers ?? defaultPlanHandlers,  // fallback 保持现有 console.log 行为
-  });
-
-  return result;
-}
+const baseHandlers = handlers ?? defaultPlanHandlers;
+const mergedHandlers: StreamHandlers = {
+  ...baseHandlers,
+  onFinish: async (result) => {
+    captured = { ...result };
+    await baseHandlers.onFinish?.(result);  // 透传，支持 TUI 展示 usage 统计
+  },
+};
+await processFullStream(streamResult, { handlers: mergedHandlers });
 ```
 
-同理，`Executor` 的 `ExecuteInput` 也需增加 `streamHandlers?: StreamHandlers`。
-
-### 3.4 loop.ts 中的调用点
-
-现在三处 LLM 调用都可以接收 observer 注入的 handlers：
+### 3.5 loop.ts 中的 observer 注入点（已实现）
 
 ```typescript
-// ── PLANNING 状态 ──────────────────────────────────────
-if (context.iteration === 1) {
-  // 首轮：全局规划，注入 planHandlers
-  await Processor.plan({
-    messages: context.session.messages,
-    handlers: input.observer?.planHandlers,
-  });
-} else {
-  // 后续轮：即时推理，注入 reasonHandlers
-  await Processor.reason({
-    messages: context.session.messages,
-    handlers: input.observer?.reasonHandlers,
-  });
-}
+// PLANNING iter=1：注入 planHandlers
+const planResult = await Processor.plan({
+  messages: [...context.session.messages],
+  handlers: input.observer?.planHandlers,
+});
+processResutlToSession(planResult);   // 写入 Session
 
-// ── EXECUTING 状态 ─────────────────────────────────────
-const result = await Processor.execute({
+// PLANNING iter>1：注入 reasonHandlers
+const reasonResult = await Processor.reason({
+  messages: [...context.session.messages],
+  handlers: input.observer?.reasonHandlers,
+});
+processResutlToSession(reasonResult);
+
+// EXECUTING：注入 executeHandlers
+const executeResult = await Processor.execute({
   agent: input.agentConfig,
   messages: [...context.session.messages],
   maxRetries: input.agentConfig.max_retries ?? 3,
+  timeout: input.agentConfig.timeout,
   streamHandlers: input.observer?.executeHandlers,
 });
+processResutlToSession(executeResult);
+
+// 状态转换时通知 observer
+input.observer?.onStateChange?.(prevState, newState, context.iteration);
+input.observer?.onIterationStart?.(context.iteration, context.maxIterations);
+input.observer?.onIterationEnd?.(context.iteration);
+input.observer?.onLoopStart?.(input.sessionId);
+input.observer?.onLoopEnd?.({ success, iterations, error });
 ```
 
-### 3.5 为什么 planHandlers / reasonHandlers 不能在 Processor 内部实现？
+### 3.6 为什么 handlers 不能存在 Processor 内部？
 
-这是最核心的架构问题。表面上看，在 `planner.ts` 内部直接持有 UI 回调更简单，为什么要绕这么大一圈？
+**三个根本原因：**
 
-**根本原因：Processor 是无状态的 session-agnostic 执行单元，它不拥有也不应该拥有 session 上下文。**
+**① 并发 Session 会产生回调污染**  
+`Processor` 是全局单例。若 Session A 和 B 并发运行，Processor 内持有的 handlers 无法区分归属，输出会互相串台。  
+本方案 handlers 随调用栈传入，Session A/B 的 handlers 各自独立，完全隔离。
 
-#### 问题 1：并发 Session 会产生回调污染
+**② Observer 生命周期属于 Loop 调用，不属于 Processor**  
+`observer` 在 `AgentLoop.loop()` 调用开始时创建，结束时销毁。Processor 是跨调用复用的单例，没有"单次 loop 调用"的生命周期感知能力，无法管理注册/注销。
 
-`Processor` 是全局单例（`export const Processor = createProcessor()`）。如果把 UI 回调存在 Processor 实例内部：
-
-```
-Session A 的 Loop ─→ Processor.plan(...)  ┐
-Session B 的 Loop ─→ Processor.plan(...)  ┘ 同一个 Processor 实例
-
-Processor 内部持有的 handlers 属于哪个 Session？
-→ 无法区分，Session A 的输出会出现在 Session B 的 TUI 里
-```
-
-而本方案中，handlers 作为 `PlanInput` 的字段随调用栈传入，每次调用完全隔离——Session A 的 `planHandlers` 和 Session B 的 `planHandlers` 是不同对象，不共享任何状态。
-
-#### 问题 2：Observer 的生命周期属于 Loop 调用，不属于 Processor
-
-一次 `AgentLoop.loop()` 调用代表一个独立的用户交互轮次，observer 在这次调用开始时由 TUI 创建，结束时销毁。Processor 是跨越多次调用复用的单例，它没有"一次 loop 调用"的生命周期概念，无法知道何时该注册/注销回调。
-
-```
-用户调用 AgentLoop.loop({ observer })
-           ↓
-    observer 生命周期开始
-    Processor.plan({ handlers: observer.planHandlers })   ← handlers 跟随调用
-    Processor.reason({ handlers: observer.reasonHandlers })
-    Processor.execute({ streamHandlers: observer.executeHandlers })
-    observer.onLoopEnd()
-    observer 生命周期结束（可以被 GC 回收）
-           ↑
-    下次 loop() 调用会传入新的 observer
-```
-
-若 handlers 存在 Processor 内部，Processor 需要一个 `register/unregister` 机制来跟踪生命周期，等价于重新发明了一个残缺版的 EventEmitter，反而更复杂。
-
-#### 问题 3：Session 管理边界
-
-`SessionContext.run(session, fn)` 在 `loop.ts` 中建立了 session 的执行边界。Processor 通过 `SessionContext.current()` 读取当前 session，但它只读取不写入 UI 状态。
-
-如果 Processor 持有 UI 回调，就隐式地把"UI 层知识"嵌入了"LLM 调用层"，破坏了分层边界：
+**③ 分层边界**
 
 ```
 loop.ts       ← 会话管理层（拥有 session + observer 生命周期）
@@ -247,303 +197,230 @@ processor/    ← LLM 执行层（无状态，仅执行 LLM 调用和工具调�
 stream-handler.ts ← 流处理层（解析流式事件，调用传入的回调）
 ```
 
-**结论**：handlers 在 `loop.ts` 层组装并通过 input 下传，是唯一符合这三层职责划分的做法。
+将 handlers 存在 Processor 内等于把"UI 层知识"嵌入"LLM 调用层"，破坏分层边界。
 
 ---
 
-## 4. TUI 层设计
+## 4. StreamHandlers 接口全貌
 
-### 4.1 技术选型：ink（React for CLI）
+`StreamHandlers`（`core/src/session/stream-handler.ts`）包含六个子处理器：
+
+```typescript
+export interface StreamHandlers {
+  reasoning?: {
+    onStart?: () => void | Promise<void>;
+    onDelta?: (text: string) => void | Promise<void>;
+    onEnd?: (fullReasoningText: string) => void | Promise<void>;
+  };
+  text?: {
+    onStart?: () => void | Promise<void>;
+    onDelta?: (text: string) => void | Promise<void>;
+    onEnd?: (fullText: string) => void | Promise<void>;
+  };
+  tool?: {
+    onCall?: (toolId: string, toolName: string, args: any) => void | Promise<void>;
+    onResult?: (toolId: string, toolName: string, result: any) => void | Promise<void>;
+  };
+  step?: {
+    onStart?: (stepNumber: number) => void | Promise<void>;
+    onEnd?: (stepNumber: number) => void | Promise<void>;
+  };
+  onError?: (error: unknown) => void | Promise<void>;
+  onFinish?: (result: {
+    text: string;
+    reasoning: string;
+    finishReason: string;
+    usage?: any;
+  }) => void | Promise<void>;
+}
+```
+
+> **注意**：`step` 处理器对应 SDK 的多步骤执行（`start-step` / `finish-step` chunks）；`onFinish` 在流结束后由 `processFullStream` 调用，可用于展示 token 用量统计。TUI 的 `planHandlers / reasonHandlers` 目前不需要 `step` 和 `onFinish`，但 `executeHandlers` 可选接入 `onFinish` 以展示每轮执行的 token 消耗。
+
+---
+
+## 5. TUI 层设计（已实现）
+
+### 5.1 技术选型：ink（React for CLI）
 
 | 库 | 适合场景 | 理由 |
 |----|---------|------|
-| **ink** | 组件化 TUI，实时更新 | 与 TypeScript 天然契合；组件模型与 React 一致；状态驱动渲染非常适合 streaming 场景；Bun 支持良好 |
-| blessed | 传统 TUI，复杂布局 | API 较底层，维护成本高 |
-| chalk + readline | 简单日志型 | 无法做布局管理和实时局部刷新 |
+| **ink** | 组件化 TUI，实时更新 | 与 TypeScript 天然契合；组件模型与 React 一致；状态驱动渲染非常适合 streaming；Bun 支持良好 |
+| blessed | 传统 TUI，复杂布局 | API 底层，维护成本高 |
+| chalk + readline | 简单日志型 | 无法做布局管理和局部刷新 |
 
-**选择 ink** 的核心原因：streaming 文本更新就是状态变化（`delta` → `setState` → 局部重渲染），这正是 React 模型的强项。
+**选择 ink 的核心原因**：streaming 文本更新就是状态变化（`delta` → `setState` → 局部重渲染），这正是 React 模型的强项。
 
-### 4.2 包目录结构
+### 5.2 包目录结构（已落地）
 
 ```
 packges/ui/
-├── package.json              # 依赖: ink, react, @core/session
+├── package.json              # 依赖: ink, react, @types/react
+├── index.ts                  # 包入口
 ├── src/
-│   ├── tui.tsx               # 入口：启动 ink 渲染根组件
-│   ├── app.tsx               # <App> 根组件，管理整体 UI 状态
+│   ├── tui.tsx               # 入口：startTUI() + CLI argv 解析
+│   ├── app.tsx               # <App> 根组件，组合所有 TUI 子组件
 │   ├── hooks/
-│   │   ├── useAgentLoop.ts   # 核心 Hook：驱动 AgentLoop，暴露渲染状态
-│   │   └── useInput.ts       # 处理用户键盘输入（ink useInput）
+│   │   └── useAgentLoop.ts   # 核心 Hook：驱动 AgentLoop，暴露渲染状态
 │   └── components/
-│       ├── MessageList.tsx   # 历史消息列表（已完成的轮次）
-│       ├── StreamingBlock.tsx # 当前正在 streaming 的文本（实时）
-│       ├── ThinkingBlock.tsx  # 推理过程展示（可折叠）
-│       ├── ToolCallLog.tsx    # 工具调用条目
-│       ├── StatusBar.tsx      # 底部状态栏：当前 Loop 状态 + 迭代计数
-│       └── PromptInput.tsx    # 用户输入框（Loop 结束后激活）
+│       ├── MessageList.tsx   # 历史消息列表（已完成轮次）
+│       ├── StreamingBlock.tsx # 当前 execute 阶段 streaming 文本（实时）
+│       ├── ThinkingBlock.tsx  # 推理过程展示（plan/reason，可折叠）
+│       ├── ToolCallLog.tsx    # 工具调用条目（name / args / result）
+│       ├── StatusBar.tsx      # 顶部状态栏：Loop 状态 + 迭代计数
+│       └── PromptInput.tsx    # 底部用户输入框（Loop 执行时 disabled）
 └── docx/
-    └── TUI-DESIGN.md         # 本文档
+    └── TUI-DESIGN.md
 ```
 
-### 4.3 UI 布局
+### 5.3 UI 布局
 
 ```
-┌──────────────────────────────────────────────┐
-│ raye  ·  session: abc123  ·  iter: 3/10      │  ← StatusBar
-├──────────────────────────────────────────────┤
-│                                              │
-│  [user] 请帮我分析这段代码                    │  ← MessageList
-│                                              │
-│  [thinking] ···▊                             │  ← ThinkingBlock (折叠)
-│  [assistant] 好的，我来分析···▊              │  ← StreamingBlock
-│                                              │
-│  [tool] calculate({"expr":"1+1"})  ✓ 2      │  ← ToolCallLog
-│                                              │
-│  [assistant] 分析结果如下：···               │
-│                                              │
-├──────────────────────────────────────────────┤
-│ > _                                          │  ← PromptInput（等待输入时激活）
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ raye  ·  session: abc123  ·  EXECUTING  ·  iter: 3/10    │  ← StatusBar
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  [user]  请帮我分析这段代码                               │  ← MessageList
+│                                                          │
+│  [plan]  ▸ 已折叠 (Planning)                             │  ←  ThinkingBlock
+│  [tool]  read_file("src/main.ts")  ✓ 1024 bytes         │  ← ToolCallLog
+│                                                          │
+│  [assistant]  分析结果如下：···                           │  ← MessageList（已完成）
+│                                                          │
+│  [reasoning]  思考中···▊                                  │  ← ThinkingBlock（streaming）
+│  [assistant]  好的，我来···▊                              │  ← StreamingBlock（streaming）
+│                                                          │
+├──────────────────────────────────────────────────────────┤
+│ > _                                                      │  ← PromptInput（Loop 结束后激活）
+└──────────────────────────────────────────────────────────┘
 ```
 
-### 4.4 核心 Hook：useAgentLoop
+### 5.4 核心 Hook：useAgentLoop（已实现）
 
-这是连接 core 和 UI 的关键层，职责：
-1. 构建 `LoopObserver`，将三个阶段的 `StreamHandlers` 分别映射到不同 React state 字段
-2. 暴露 `submit(message)` 方法供 `PromptInput` 调用
-3. 暴露 `isRunning` 状态控制输入框是否可用
+职责：构建 `LoopObserver`，桥接 core 事件与 React state。
+
+**关键实现细节（相比设计草稿的改进）：**
+
+| 改进点 | 说明 |
+|--------|------|
+| `useRef` 缓存 streaming 文本 | `streamingRef.current` 在 `onDelta` 闭包中直接操作，避免拿到旧 state；`setState` 只用 ref 的最新值更新 UI |
+| `TurnMessage.id` | 每条消息有唯一 `id`（`msg-1`, `msg-2`, ...），供 React key 和工具结果匹配使用 |
+| `TurnMessage.toolCallId` | 工具调用专属字段，`onResult` 通过 `toolCallId` 精确定位对应的 tool 消息（而非 `toolName`），避免同名工具并发时匹配错误 |
+| `maxIterations` 暴露到 state | `onIterationStart` 同步更新 `state.maxIterations`，StatusBar 可动态展示 `iter 3/10` |
+| `loopState: "IDLE"` | 初始状态，区别于 Loop 运行中的真实状态机值 |
+| `error` 在 `submit` 的 catch 兜底 | `AgentLoop.loop` 抛出的非 observer 异常也能展示到 PromptInput |
 
 ```typescript
-// packges/ui/src/hooks/useAgentLoop.ts
-import { useState, useCallback } from 'react';
-import { AgentLoop } from '@raye/core';
-import type { LoopObserver, AgentLoopState } from '@raye/core';
-
+// packges/ui/src/hooks/useAgentLoop.ts（核心结构）
 export interface TurnMessage {
+  id: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
-  // 仅 tool 角色使用
+  phase?: 'plan' | 'reason' | 'execute';
+  // 工具调用专属
+  toolCallId?: string;
   toolName?: string;
   toolArgs?: unknown;
   toolResult?: unknown;
-  // 区分消息来源阶段（用于 TUI 差异化渲染）
-  phase?: 'plan' | 'reason' | 'execute';
 }
 
 export interface AgentLoopUIState {
-  /** 已完成的消息列表（含 user/assistant/tool，带 phase 标记） */
   messages: TurnMessage[];
-  /**
-   * 分阶段的实时流式文本（streaming 中）
-   * plan/reason 阶段展示为折叠的 ThinkingBlock
-   * execute 阶段展示为主回复区 StreamingBlock
-   */
-  streaming: {
-    plan: string;
-    reason: string;
-    execute: string;
-  };
-  /** 当前 Loop 状态 */
+  streaming: { plan: string; reason: string; execute: string };
   loopState: AgentLoopState | 'IDLE';
-  /** 当前迭代次数 */
   iteration: number;
-  /** 是否正在运行 */
+  maxIterations: number;
   isRunning: boolean;
-  /** 错误信息 */
   error?: string;
 }
 
 export function useAgentLoop(agentConfig: AgentConfig, sessionId: string) {
-  const [state, setState] = useState<AgentLoopUIState>({
-    messages: [],
-    streaming: { plan: '', reason: '', execute: '' },
-    loopState: 'IDLE',
-    iteration: 0,
-    isRunning: false,
-  });
+  const [state, setState] = useState<AgentLoopUIState>(INITIAL_STATE);
+  // ⚠️ 关键：用 ref 缓冲 streaming 文本，避免 onDelta 闭包拿到旧 state
+  const streamingRef = useRef({ plan: '', reason: '', execute: '' });
 
-  const buildObserver = useCallback((): LoopObserver => ({
-    // ── Loop 级别事件 ──────────────────────────────────────
-    onLoopStart: () =>
-      setState(s => ({
-        ...s,
-        isRunning: true,
-        streaming: { plan: '', reason: '', execute: '' },
-      })),
-
-    onStateChange: (_, to, iteration) =>
-      setState(s => ({ ...s, loopState: to, iteration })),
-
-    onLoopEnd: ({ success, error }) =>
-      setState(s => ({
-        ...s,
-        isRunning: false,
-        loopState: success ? 'COMPLETED' : 'FAILED',
-        error: error?.message,
-      })),
-
-    onError: (error, loopState) =>
-      setState(s => ({ ...s, error: `[${loopState}] ${error.message}` })),
-
-    // ── 首轮全局规划阶段 → streaming.plan ─────────────────
-    planHandlers: {
-      reasoning: {
-        onDelta: (text) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, plan: s.streaming.plan + text },
-          })),
-        onEnd: (fullText) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, plan: '' },
-            // plan 阶段的推理结果作为一条「内部思考」消息归档
-            messages: [...s.messages, { role: 'assistant', content: fullText, phase: 'plan' }],
-          })),
-      },
-      text: {
-        onDelta: (text) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, plan: s.streaming.plan + text },
-          })),
-        onEnd: (fullText) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, plan: '' },
-            messages: [...s.messages, { role: 'assistant', content: fullText, phase: 'plan' }],
-          })),
-      },
-    },
-
-    // ── 后续轮即时推理阶段 → streaming.reason ──────────────
-    reasonHandlers: {
-      reasoning: {
-        onDelta: (text) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, reason: s.streaming.reason + text },
-          })),
-        onEnd: (fullText) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, reason: '' },
-            messages: [...s.messages, { role: 'assistant', content: fullText, phase: 'reason' }],
-          })),
-      },
-      text: {
-        onDelta: (text) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, reason: s.streaming.reason + text },
-          })),
-        onEnd: (fullText) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, reason: '' },
-            messages: [...s.messages, { role: 'assistant', content: fullText, phase: 'reason' }],
-          })),
-      },
-    },
-
-    // ── 主执行阶段 → streaming.execute + 工具调用 ──────────
-    executeHandlers: {
-      text: {
-        onDelta: (text) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, execute: s.streaming.execute + text },
-          })),
-        onEnd: (fullText) =>
-          setState(s => ({
-            ...s,
-            streaming: { ...s.streaming, execute: '' },
-            messages: [...s.messages, { role: 'assistant', content: fullText, phase: 'execute' }],
-          })),
-      },
-      tool: {
-        onCall: (id, name, args) =>
-          setState(s => ({
-            ...s,
-            messages: [
-              ...s.messages,
-              { role: 'tool', content: '', toolName: name, toolArgs: args, phase: 'execute' },
-            ],
-          })),
-        onResult: (id, name, result) =>
-          setState(s => {
-            const msgs = [...s.messages];
-            const idx = msgs.findLastIndex(m => m.role === 'tool' && m.toolName === name);
-            if (idx !== -1) msgs[idx] = { ...msgs[idx], toolResult: result };
-            return { ...s, messages: msgs };
-          }),
-      },
-    },
-  }), []);
+  const buildObserver = useCallback((): LoopObserver => {
+    streamingRef.current = { plan: '', reason: '', execute: '' };
+    return {
+      // Loop 级别 + planHandlers + reasonHandlers + executeHandlers
+      // （详见完整实现）
+    };
+  }, []);  // 无依赖，buildObserver 引用稳定
 
   const submit = useCallback(async (userMessage: string) => {
-    setState(s => ({
-      ...s,
-      messages: [...s.messages, { role: 'user', content: userMessage }],
-    }));
-
-    await AgentLoop.loop({
-      sessionId,
-      agentConfig,
-      message: { role: 'user', content: userMessage },
-      observer: buildObserver(),
-    });
+    setState(s => ({ ...s, messages: [...s.messages, { id: nextId(), role: 'user', content: userMessage }] }));
+    try {
+      await AgentLoop.loop({ sessionId, agentConfig, message: userMsg, observer: buildObserver() });
+    } catch (err) {
+      // 兜底：捕获 observer 外部的顶层异常
+      setState(s => ({ ...s, isRunning: false, error: String(err) }));
+    }
   }, [sessionId, agentConfig, buildObserver]);
 
   return { state, submit };
 }
 ```
 
-### 4.5 根组件 App
+### 5.5 工具调用匹配：toolCallId 优于 toolName
 
-三个阶段的流式文本对应三个不同的视觉区域：
-- `plan` / `reason` → `ThinkingBlock`（折叠，标注阶段标签）  
-- `execute` → `StreamingBlock`（主回复区）
+```typescript
+// executeHandlers.tool.onResult
+onResult: (_id, name, result) => {
+  setState(s => {
+    const msgs = [...s.messages];
+    // 通过 toolCallId 精确匹配，非 toolName（避免同名工具并发时错误覆盖）
+    const idx = msgs.findLastIndex(m => m.role === 'tool' && m.toolCallId === _id);
+    if (idx !== -1) {
+      msgs[idx] = { ...msgs[idx]!, toolResult: result, content: JSON.stringify(result) };
+    }
+    return { ...s, messages: msgs };
+  });
+},
+```
+
+### 5.6 根组件 App（已实现）
 
 ```typescript
 // packges/ui/src/app.tsx
-import React from 'react';
-import { Box } from 'ink';
-import { useAgentLoop }   from './hooks/useAgentLoop';
-import { MessageList }    from './components/MessageList';
-import { StreamingBlock } from './components/StreamingBlock';
-import { ThinkingBlock }  from './components/ThinkingBlock';
-import { StatusBar }      from './components/StatusBar';
-import { PromptInput }    from './components/PromptInput';
-
 export function App({ agentConfig, sessionId }: AppProps) {
   const { state, submit } = useAgentLoop(agentConfig, sessionId);
-  const { streaming } = state;
+  const { streaming, messages, loopState, iteration, maxIterations, isRunning, error } = state;
 
   return (
     <Box flexDirection="column" height="100%">
-      <StatusBar loopState={state.loopState} iteration={state.iteration} sessionId={sessionId} />
+      <StatusBar loopState={loopState} iteration={iteration} maxIterations={maxIterations} sessionId={sessionId} />
       <Box flexDirection="column" flexGrow={1} overflowY="hidden">
-        {/* 历史消息（含 phase 标记，由 MessageList 差异化渲染） */}
-        <MessageList messages={state.messages} />
-        {/* 实时流式区：plan/reason 相同样式，execute 独立样式 */}
-        {streaming.plan    && <ThinkingBlock label="Planning" text={streaming.plan} />}
-        {streaming.reason  && <ThinkingBlock label="Reasoning" text={streaming.reason} />}
+        <MessageList messages={messages} />
+        {streaming.plan   && <ThinkingBlock label="Planning" text={streaming.plan} />}
+        {streaming.reason && <ThinkingBlock label="Reasoning" text={streaming.reason} />}
         {streaming.execute && <StreamingBlock text={streaming.execute} />}
       </Box>
-      <PromptInput
-        disabled={state.isRunning}
-        onSubmit={submit}
-        error={state.error}
-      />
+      <PromptInput disabled={isRunning} onSubmit={submit} error={error} />
     </Box>
   );
 }
 ```
 
+### 5.7 TUI 入口（已实现）
+
+```typescript
+// packges/ui/src/tui.tsx
+export function startTUI(options?: { sessionId?: string }) {
+  const sessionId = options?.sessionId ?? `session-${Date.now()}`;
+  const agents = loadAndGetAgent();
+  const agentConfig = agents.agent!;
+  const { waitUntilExit } = render(<App agentConfig={agentConfig} sessionId={sessionId} />);
+  return waitUntilExit();
+}
+
+// CLI 直接运行：bun packges/ui/src/tui.tsx [sessionId]
+const sessionId = process.argv[2];
+startTUI({ sessionId }).then(() => process.exit(0)).catch(() => process.exit(1));
+```
+
 ---
 
-## 5. 数据流全景
+## 6. 数据流全景
 
 ```
 用户在 PromptInput 输入并回车
@@ -551,7 +428,7 @@ export function App({ agentConfig, sessionId }: AppProps) {
           ▼
   useAgentLoop.submit(message)
           │
-          ├─ setState: messages += {role:'user', content}
+          ├─ setState: messages += { role:'user', content }
           │
           ▼
   AgentLoop.loop({ ..., observer })                   ← core 层
@@ -559,31 +436,31 @@ export function App({ agentConfig, sessionId }: AppProps) {
           ├─ observer.onLoopStart()                   → isRunning = true
           │
           ├─ [PLANNING, iter=1]
-          │     observer.onStateChange()              → loopState = 'PLANNING'
-          │     Processor.plan(msgs, planHandlers)
-          │       planHandlers.text.onDelta()         → streaming.plan += delta
-          │       planHandlers.text.onEnd()           → messages += {phase:'plan'}
-          │                                             streaming.plan = ''
+          │     observer.onStateChange() / onIterationStart()
+          │     Processor.plan({ msgs, handlers: planHandlers })
+          │       planHandlers.reasoning.onDelta()    → streamingRef.plan += delta → setState
+          │       planHandlers.reasoning.onEnd()      → messages += { phase:'plan' }, streaming.plan = ''
+          │       planHandlers.text.onDelta/onEnd()   → 同上
+          │     processResutlToSession(planResult)    → 写入 Session
           │
           ├─ [EXECUTING]
-          │     observer.onStateChange()              → loopState = 'EXECUTING'
+          │     observer.onStateChange()
           │     Processor.execute({ executeHandlers })
-          │       executeHandlers.text.onDelta()      → streaming.execute += delta
-          │       executeHandlers.tool.onCall()       → messages += tool entry
-          │       executeHandlers.tool.onResult()     → update tool entry
-          │       executeHandlers.text.onEnd()        → messages += {phase:'execute'}
-          │                                             streaming.execute = ''
+          │       executeHandlers.text.onDelta()      → streamingRef.execute += delta → setState
+          │       executeHandlers.tool.onCall()       → messages += { role:'tool', toolCallId }
+          │       executeHandlers.tool.onResult()     → 通过 toolCallId 更新 tool 条目
+          │       executeHandlers.text.onEnd()        → messages += { phase:'execute' }
+          │     observer.onIterationEnd()
+          │     processResutlToSession(executeResult)
           │
-          ├─ [OBSERVING] → [PLANNING iter>1 / COMPLETED]
+          ├─ [OBSERVING] → makeDecision → [PLANNING iter>1 / COMPLETED / COMPACT]
           │
           ├─ [PLANNING, iter>1]
-          │     Processor.reason(msgs, reasonHandlers)
-          │       reasonHandlers.text.onDelta()       → streaming.reason += delta
-          │       reasonHandlers.text.onEnd()         → messages += {phase:'reason'}
-          │                                             streaming.reason = ''
+          │     Processor.reason({ msgs, handlers: reasonHandlers })
+          │       reasonHandlers.text/reasoning.onDelta/onEnd → streaming.reason
           │     → [EXECUTING] 再次执行 ...
           │
-          └─ observer.onLoopEnd()                     → isRunning = false
+          └─ observer.onLoopEnd()                     → isRunning = false, loopState → COMPLETED/FAILED
                     │
                     ▼
           PromptInput 重新激活，等待下一轮输入
@@ -591,50 +468,84 @@ export function App({ agentConfig, sessionId }: AppProps) {
 
 ---
 
-## 6. 实现步骤
+## 7. 实现步骤（当前完成情况）
 
-| 步骤 | 位置 | 内容 |
-|------|------|------|
-| 1 | `core/src/session/type.ts` | 添加 `LoopObserver` 接口（含 `planHandlers/reasonHandlers/executeHandlers`），`LoopInput` 增加 `observer?` |
-| 2 | `core/src/session/processor/planner.ts` | `plan()` 签名增加可选 `handlers?: StreamHandlers`，内部使用 `handlers ?? defaultPlanHandlers` |
-| 3 | `core/src/session/processor/reasoner.ts` | 同上，`reason()` 增加 `handlers?: StreamHandlers` |
-| 4 | `core/src/session/processor/executor.ts` | `ExecuteInput` 增加 `streamHandlers?: StreamHandlers`，透传给 `processFullStream` |
-| 5 | `core/src/session/processor/index.ts` | `Processor` 接口同步更新 `plan/reason` 签名 |
-| 6 | `core/src/session/loop.ts` | PLANNING 状态传入 `observer?.planHandlers / reasonHandlers`；EXECUTING 传入 `observer?.executeHandlers`；状态转换处调用 `observer.onStateChange` 等 |
-| 7 | `ui/package.json` | 添加依赖 `ink`, `react`, `@types/react` |
-| 8 | `ui/src/hooks/useAgentLoop.ts` | 实现三阶段 `StreamHandlers` → `streaming.{plan,reason,execute}` state 桥接 |
-| 9 | `ui/src/components/*` | 实现各 TUI 组件（`ThinkingBlock` 复用于 plan/reason，`StreamingBlock` 用于 execute） |
-| 10 | `ui/src/app.tsx` + `ui/src/tui.tsx` | 组装根组件，启动 ink render |
+| 步骤 | 位置 | 内容 | 状态 |
+|------|------|------|------|
+| 1 | `core/src/session/type.ts` | `LoopObserver`、`PlanInput`、`ReasonInput`、`ExecuteInput` 含 `handlers?` | ✅ 已完成 |
+| 2 | `core/src/session/processor/planner.ts` | `plan(PlanInput)` 注入 `handlers`，`mergedHandlers` 捕获 + 透传 `onFinish` | ✅ 已完成 |
+| 3 | `core/src/session/processor/reasoner.ts` | `reason(ReasonInput)` 同上 | ✅ 已完成 |
+| 4 | `core/src/session/processor/executor.ts` | `ExecuteInput.streamHandlers` 透传给 `processFullStream` | ✅ 已完成 |
+| 5 | `core/src/session/processor/index.ts` | `Processor` 接口聚合 `plan / reason / execute` | ✅ 已完成 |
+| 6 | `core/src/session/loop.ts` | PLANNING/EXECUTING 传入 `observer?.xxxHandlers`；状态转换处回调 observer | ✅ 已完成 |
+| 7 | `ui/package.json` | 添加依赖 `ink`, `react`, `@types/react` | ✅ 已完成 |
+| 8 | `ui/src/hooks/useAgentLoop.ts` | `useRef` 缓存 streaming；三阶段 handlers；`toolCallId` 精确匹配 | ✅ 已完成 |
+| 9 | `ui/src/components/*` | `ThinkingBlock / StreamingBlock / ToolCallLog / MessageList / StatusBar / PromptInput` | ✅ 已完成 |
+| 10 | `ui/src/app.tsx` + `ui/src/tui.tsx` | 组装根组件；`startTUI()` + CLI argv 解析 | ✅ 已完成 |
 
 ---
 
-## 7. 关键设计决策说明
+## 8. 关键设计决策
 
-### 7.1 为什么在 LoopInput 中注入 observer，而不是让 UI 直接包裹 loop？
+### 8.1 为什么在 LoopInput 注入 observer，而不是让 UI 直接包裹 loop？
 
-直接拦截 `console.log` 或 monkey-patch 函数会破坏测试稳定性和类型安全。`LoopInput.observer` 是显式契约，允许 core 的测试继续用 `undefined` observer 跑，TUI 层只需注入实现。
+直接拦截 `console.log` 或 monkey-patch 函数会破坏测试稳定性和类型安全。  
+`LoopInput.observer` 是显式契约，core 层测试用 `undefined` observer 跑，TUI 层只需注入实现，两者解耦。
 
-### 7.2 为什么按 Processor 阶段（plan/reason/execute）分组，而不是按 reasoning/text 流类型分组？
+### 8.2 为什么按 Processor 阶段分组，而不是按 reasoning/text 流类型分组？
 
-不同阶段对用户的语义完全不同：
-- `plan`：全局规划，用户可以理解为「AI 在分解任务」
-- `reason`：局部推理，用户可以理解为「AI 在决定下一步」
-- `execute`：主回复，是用户最关心的内容
+不同阶段对用户语义完全不同：
+- **plan**：全局规划 → 「AI 在分解任务」
+- **reason**：局部推理 → 「AI 在决定下一步」
+- **execute**：主回复 → 用户最关心的内容
 
-如果只按流类型（`reasoning`/`text`）分组，TUI 无法区分当前是哪个语义阶段在输出，无法差异化展示。分阶段设计才能让 TUI 给用户正确的上下文提示。
+如果只按流类型（`reasoning` / `text`）分组，TUI 无法差异化渲染三个阶段的内容。
 
-### 7.3 为什么 `plan/reason` 阶段也需要单独的 StreamHandlers，而不是只在 EXECUTING 监听？
+### 8.3 为什么用 streamingRef 而不是直接 setState？
 
-`planner.ts` 和 `reasoner.ts` 各自内部调用了独立的 `processFullStream`，目前硬编码了 `console.log` 回调。如果只改 `executor.ts`，plan/reason 阶段的 LLM 输出仍然只打到 terminal，TUI 完全看不到，用户感知断层。
+`onDelta` 回调在异步流中被频繁调用，每次调用时 React state 闭包捕获的是创建 observer 时的快照值，  
+直接用 `s.streaming.plan + text` 会导致 delta 内容互相覆盖。  
+`useRef` 跳出闭包，保证每次追加都是最新的累积值：
 
-### 7.4 为什么修改 `Planner.plan()` / `Reasoner.reason()` 签名而不是在外层包裹它们？
+```typescript
+// ✅ 正确：通过 ref 累积
+streamingRef.current.plan += text;
+setState(s => ({ ...s, streaming: { ...s.streaming, plan: streamingRef.current.plan } }));
 
-在 `loop.ts` 外层 monkey-patch 或 proxy 需要拦截 `processFullStream` 内部的对象引用，极其脆弱。直接扩展函数签名是最干净的方式，且新增参数为可选，完全后向兼容——不传 `handlers` 时降级到原有 `console.log` 行为，不影响现有测试。
+// ❌ 错误：直接用 state 追加（闭包陷阱）
+setState(s => ({ ...s, streaming: { ...s.streaming, plan: s.streaming.plan + text } }));
+```
 
-### 7.5 为什么 `onTextEnd` 才把 assistant 消息推入 messages，而不是 `onTextDelta` 逐步追加？
+### 8.4 为什么 onTextEnd 才归档消息，而不是 onTextDelta 逐步追加？
 
-`streaming.{plan,reason,execute}` 用于实时展示当前流式输出，`messages` 保存已完成消息的历史记录。两者分离使得「正在生成」和「已完成」在视觉上有明确区分，且避免频繁 setState 触发全量列表重渲染。
+`streaming.{plan,reason,execute}` 用于实时展示当前流式输出，  
+`messages` 保存已完成消息的历史记录。两者分离使得「正在生成」和「已完成」在视觉上有明确区分，  
+且避免频繁 setState 触发全量列表重渲染（仅 StreamingBlock 局部刷新）。
 
-### 7.6 PromptInput 的 disabled 控制
+### 8.5 PromptInput 的 disabled 控制
 
-`state.isRunning === true` 时输入框 disabled，保证用户不会在 Loop 执行中提交新消息导致并发混乱。Loop 结束后自动激活，体验上类似 Claude.ai 的交互模式。
+`isRunning === true` 时输入框 disabled，保证用户不会在 Loop 执行中提交新消息导致并发混乱。  
+Loop 结束后自动激活，体验类似 Claude.ai 的交互模式。
+
+### 8.6 processResutlToSession 的职责边界
+
+`Processor.plan/reason/execute` 返回 `ProcessorStepResult`，包含：
+- `text` / `reasoning`：LLM 完整文本输出
+- `finishReason` / `usage`：执行元数据
+- `message`：已组装好的 `ModelMessage`，可直接调用 `SessionOps.addMessage`
+- `toolCalls` / `toolResults`（execute 专属）
+
+由 `loop.ts` 中的 `processResutlToSession()` 负责将结果写入 `context.session`，  
+Processor 自身不直接操作 Session，分层职责清晰。
+
+---
+
+## 9. 待优化方向
+
+| 项目 | 描述 | 优先级 |
+|------|------|--------|
+| ThinkingBlock 折叠交互 | 目前 plan/reason 阶段 ThinkingBlock 展开/折叠靠是否有 streaming 内容决定；已完成的 thinking 消息在 MessageList 中可考虑支持按键折叠 | 中 |
+| token 用量展示 | `executeHandlers.onFinish` 已可获取 usage 数据，可在 StatusBar 或独立区域渲染 token 消耗 | 低 |
+| ToolCallLog 多步展示 | 同一 execute 轮次多个工具调用按序展示；目前已通过 `toolCallId` 精确匹配，可进一步做折叠和展开 | 中 |
+| COMPACTING 阶段可视化 | 当前 COMPACTING 状态转换已通过 `onStateChange` 通知，StatusBar 可添加「压缩中」提示 | 低 |
+| AbortController | 向 `ExecuteInput.abortSignal` 注入用户可控的中断信号，允许 TUI 在 Loop 执行中响应 Ctrl+C | 高 |

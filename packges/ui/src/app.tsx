@@ -14,22 +14,22 @@ interface AppProps {
 }
 
 /**
- * TUI 根组件
+ * TUI 根组件 (极客无框版)
  *
- * 布局（从上到下）：
- *   StatusBar          — 顶部状态栏（session id / loop state / iter）
- *   MessageList        — 历史消息滚动区
- *   ThinkingBlock      — 当前 plan/reason 阶段 streaming（可选）
- *   StreamingBlock     — 当前 execute 阶段 streaming（可选）
- *   PromptInput        — 底部输入框（Loop 运行时 disabled）
+ * 布局（采用自然流，无固定100%高度，由 Static 将历史推出终端底部）：
+ *   StatusBar          — 顶部应用边界
+ *   MessageList        — 通过 <Static> 印在终端缓冲区的历史记录
+ *   ThinkingBlock      — 当前 streaming 态的暗灰色思考内容
+ *   StreamingBlock     — 当前 execute 的输出
+ *   PromptInput        — 提供用户输入
  */
 export function App({ agentConfig, sessionId }: AppProps) {
     const { state, submit } = useAgentLoop(agentConfig, sessionId);
     const { streaming, messages, loopState, iteration, maxIterations, isRunning, error } = state;
 
     return (
-        <Box flexDirection="column" height="100%">
-            {/* 顶部状态栏 */}
+        <Box flexDirection="column">
+            {/* 顶部应用边界，保持整个 Agent 体验框架感 */}
             <StatusBar
                 loopState={loopState}
                 iteration={iteration}
@@ -37,27 +37,23 @@ export function App({ agentConfig, sessionId }: AppProps) {
                 sessionId={sessionId}
             />
 
-            {/* 消息区（弹性增长） */}
-            <Box flexDirection="column" flexGrow={1} overflowY="hidden">
-                <MessageList messages={messages} />
+            {/* 历史消息由 Static 组件拦截渲染，自然上推，不占当前屏幕固定空间，避免闪屏 */}
+            <MessageList messages={messages} />
 
-                {/* 首轮全局规划 streaming */}
+            {/* 活跃区域：实时日志与回复 */}
+            <Box flexDirection="column" marginY={1}>
                 {streaming.plan && (
                     <ThinkingBlock label="Planning" text={streaming.plan} />
                 )}
-
-                {/* 后续轮即时推理 streaming */}
                 {streaming.reason && (
                     <ThinkingBlock label="Reasoning" text={streaming.reason} />
                 )}
-
-                {/* 主执行阶段 streaming */}
                 {streaming.execute && (
                     <StreamingBlock text={streaming.execute} />
                 )}
             </Box>
 
-            {/* 底部输入框 */}
+            {/* 用户交互区 */}
             <PromptInput
                 disabled={isRunning}
                 onSubmit={submit}

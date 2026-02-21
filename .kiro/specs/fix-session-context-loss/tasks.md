@@ -1,0 +1,82 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Fault Condition** - Session Context Loss in PLANNING and EXECUTING Phases
+  - **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate session messages are lost when `processResutlToSession()` return value is ignored
+  - **Scoped PBT Approach**: Focus on the three specific locations where `processResutlToSession()` is called but return value is not assigned
+  - Test implementation details from Fault Condition in design:
+    - Location 1: PLANNING phase - Plan call (line 151)
+    - Location 2: PLANNING phase - Reason call (line 158)
+    - Location 3: EXECUTING phase - Execute call (line 180)
+  - The test assertions should match the Expected Behavior Properties from design:
+    - After `Processor.plan()` call, `context.session.messages` should contain plan message
+    - After `Processor.reason()` call, `context.session.messages` should contain reason message
+    - After `Processor.execute()` call, `context.session.messages` should contain assistant and tool-result messages
+    - After `sessionManager.save()`, persisted session should contain all messages from PLANNING and EXECUTING phases
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
+  - Document counterexamples found:
+    - PLANNING phase: plan/reason messages not in `context.session.messages`
+    - EXECUTING phase: assistant/tool-result messages not in `context.session.messages`
+    - SessionManager: saved session missing PLANNING phase messages
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 1.1, 1.2, 1.3, 1.4_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - Immutable Pattern Integrity
+  - **IMPORTANT**: Follow observation-first methodology
+  - Observe behavior on UNFIXED code for non-buggy aspects:
+    - `processResutlToSession()` returns new session object without modifying original
+    - SessionOps operations (addMessage, addMessages, addTokens, etc.) return new objects
+    - Message transformation logic (assistant message + tool-call blocks, tool-result messages) works correctly
+    - State transition flow (PLANNING → EXECUTING → OBSERVING) proceeds correctly
+  - Write property-based tests capturing observed behavior patterns from Preservation Requirements:
+    - For all SessionOps operations, verify immutability: original session unchanged, new session returned
+    - For all message transformations, verify conversion logic remains consistent
+    - For all state transitions, verify flow sequence is preserved
+    - For all SessionContext operations, verify run() and current() behavior unchanged
+  - Property-based testing generates many test cases for stronger guarantees
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
+
+- [x] 3. Fix for session context loss in AgentLoop
+
+  - [x] 3.1 Implement the fix in `packges/core/src/session/loop.ts`
+    - Change line 151: `context.session = processResutlToSession(planResult);` (assign return value for Plan call)
+    - Change line 158: `context.session = processResutlToSession(reasonResult);` (assign return value for Reason call)
+    - Change line 180: `context.session = processResutlToSession(executeResult);` (assign return value for Execute call)
+    - _Bug_Condition: isBugCondition(codeLocation) where codeLocation.function == "processResutlToSession" AND returnValue IS NOT assigned_to("context.session") AND phase IN ["PLANNING", "EXECUTING"]_
+    - _Expected_Behavior: For any call to processResutlToSession(result) in PLANNING or EXECUTING phases, assign returned session object back to context.session_
+    - _Preservation: processResutlToSession() continues using immutable pattern; SessionOps operations continue returning new objects; message transformation logic unchanged; state transition flow unchanged_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1, 3.2, 3.3, 3.4, 3.5_
+
+  - [x] 3.2 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - Session Context Correctly Updated
+    - **IMPORTANT**: Re-run the SAME test from task 1 - do NOT write a new test
+    - The test from task 1 encodes the expected behavior
+    - When this test passes, it confirms the expected behavior is satisfied:
+      - PLANNING phase plan/reason messages are in `context.session.messages`
+      - EXECUTING phase assistant/tool-result messages are in `context.session.messages`
+      - SessionManager saves complete session with all messages
+    - Run bug condition exploration test from step 1
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed)
+    - _Requirements: 2.1, 2.2, 2.3, 2.4_
+
+  - [x] 3.3 Verify preservation tests still pass
+    - **Property 2: Preservation** - Immutable Pattern Integrity Maintained
+    - **IMPORTANT**: Re-run the SAME tests from task 2 - do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Confirm all tests still pass after fix:
+      - SessionOps immutability preserved
+      - Message transformation logic unchanged
+      - State transition flow unchanged
+      - SessionContext behavior unchanged
+
+- [x] 4. Checkpoint - Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.

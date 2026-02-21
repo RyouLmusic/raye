@@ -5,7 +5,7 @@ import { SessionContext } from "@/session/seesion";
 import { processFullStream } from "@/session/stream-handler";
 import type { StreamHandlers } from "@/session/stream-handler";
 import type { PlanInput, ProcessorStepResult } from "@/session/type";
-import { buildAssistantMessage } from "@/session/processor/utils";
+import { buildAssistantMessage, sanitizeMessagesForNonToolAgent } from "@/session/processor/utils";
 
 export interface Planner {
     plan(input: PlanInput): Promise<ProcessorStepResult>;
@@ -58,9 +58,12 @@ async function plan(input: PlanInput): Promise<ProcessorStepResult> {
     const planAgent = loadAndGetAgent().plan!;
     const session = SessionContext.current();
 
+    // 清理消息：移除工具相关内容，因为 plan agent 不支持工具调用
+    const sanitizedMessages = sanitizeMessagesForNonToolAgent(messages);
+
     const streamResult = await streamTextWrapper({
         agent: planAgent,
-        messages: [...messages],
+        messages: sanitizedMessages,
         maxRetries: 0,
     });
 

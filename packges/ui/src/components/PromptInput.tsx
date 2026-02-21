@@ -1,23 +1,14 @@
 import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { Icon } from "./Icon";
 
 interface PromptInputProps {
-    /** Loop 运行时禁用输入 */
     disabled: boolean;
-    /** 提交回调 */
     onSubmit: (message: string) => void;
-    /** 错误提示 */
     error?: string;
-    /** 是否获取焦点（ink 要求明确传递） */
     isFocused?: boolean;
 }
 
-/**
- * 底部用户输入框
- *
- * disabled=true  时显示 "waiting…" 并不响应键盘
- * disabled=false 时激活，响应输入，回车提交
- */
 export function PromptInput({ disabled, onSubmit, error, isFocused = true }: PromptInputProps) {
     const [value, setValue] = useState("");
 
@@ -48,20 +39,23 @@ export function PromptInput({ disabled, onSubmit, error, isFocused = true }: Pro
     );
 
     return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" marginTop={1}>
             {error && (
-                <Box paddingX={1}>
-                    <Text color="red">⚠  {error}</Text>
+                <Box paddingX={0} marginBottom={1}>
+                    <Icon name="error" color="redBright" />
+                    <Text color="redBright"> </Text>
+                    <Text color="redBright">{error}</Text>
                 </Box>
             )}
-            <Box borderStyle="single" borderColor={disabled ? "gray" : "blue"} paddingX={1}>
+            <Box paddingX={0}>
                 {disabled ? (
-                    <Text color="gray">waiting for agent…</Text>
+                    <Text color="gray" dimColor>[ Agent working... ]</Text>
                 ) : (
                     <>
-                        <Text color="blue" bold>❯ </Text>
+                        <Icon name="user" color="cyanBright" />
+                        <Text color="cyanBright"> </Text>
                         <Text color="white">{value}</Text>
-                        <Text color="blue">█</Text>
+                        <Text color="cyanBright">_</Text>
                     </>
                 )}
             </Box>

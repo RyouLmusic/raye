@@ -114,8 +114,9 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
          * 控制模型如何选择使用工具
          * 可选值: 'auto' | 'required' | 'none' | { type: 'tool', toolName: string }
          * 默认: 'auto'
+         * 优先使用 input 中的值，否则使用 agentConfig 中的值
          */
-        // toolChoice: 'auto',
+        ...(input.toolChoice !== undefined ? { toolChoice: input.toolChoice } : (agentConfig.tool_choice !== undefined && { toolChoice: agentConfig.tool_choice })),
 
         /**
          * activeTools: 激活的工具列表 (可选)
