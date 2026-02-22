@@ -48,6 +48,9 @@ export function App({ agentConfig, sessionId }: AppProps) {
                 {streaming.reason && (
                     <ThinkingBlock label="Reasoning" text={streaming.reason} />
                 )}
+                {streaming.executeReasoning && (
+                    <ThinkingBlock label="Thinking" text={streaming.executeReasoning} />
+                )}
                 {streaming.execute && (
                     <StreamingBlock text={streaming.execute} />
                 )}

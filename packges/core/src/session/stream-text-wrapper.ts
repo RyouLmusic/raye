@@ -5,7 +5,7 @@ import { createUnifiedStreamTransform } from "@/session/stream-transformer.js";
 import type { ToolSet } from "ai";
 import { getToolsByNames } from "@/tools/tools-register.ts";
 // 从 common 包导入
-import { APP_NAME, formatDate } from "common";
+import { APP_NAME, formatDate, createLogger } from "common";
 
 
 export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: StreamTextInput<TOOLS>): Promise<StreamTextResult<TOOLS, never>> {
@@ -15,17 +15,33 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
         throw new Error("Agent not found in config");
     }
 
+    const logger = createLogger("StreamWrapper", process.env.RAYE_DEBUG === "1");
+
     // 默认错误处理回调
     const defaultOnError: typeof input.onError = (error) => {
-        console.error(`[${APP_NAME}] Stream Error:`, {
-            timestamp: formatDate(new Date()),
-            agent: agentConfig.name,
-            model: agentConfig.model,
-            error: error instanceof Error ? {
-                message: error.message,
-                stack: error.stack
-            } : error
-        });
+        const err = error as any;
+        const statusCode = err?.statusCode || err?.status;
+        
+        // 为 429 错误提供更友好的提示
+        if (statusCode === 429) {
+            logger.error(`⚠️  速率限制 (429 Too Many Requests):`, {
+                timestamp: formatDate(new Date()),
+                agent: agentConfig.name,
+                model: agentConfig.model,
+                message: '请求过于频繁，系统将自动重试',
+                error: err?.message || err?.responseBody || error
+            });
+        } else {
+            logger.error(`Stream Error:`, {
+                timestamp: formatDate(new Date()),
+                agent: agentConfig.name,
+                model: agentConfig.model,
+                error: error instanceof Error ? {
+                    message: error.message,
+                    stack: error.stack
+                } : error
+            });
+        }
     };
 
     // 默认完成回调
@@ -33,7 +49,7 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
         // 使用 totalUsage 而不是 usage，因为在流式处理中 usage 需要等流消费完才有值
         const usage = result.totalUsage || result.usage;
         
-        console.log(`[${APP_NAME}] Stream Finished:`, {
+        logger.log(`Stream Finished:`, {
             timestamp: formatDate(new Date()),
             agent: agentConfig.name,
             model: agentConfig.model,
@@ -302,7 +318,7 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
          * onAbort: 中止回调 (可选)
          * 在请求被中止时调用
          */
-        onAbort: async () => { console.log('已中止'); },
+        onAbort: async () => { logger.log('已中止'); },
 
         /**
          * onStepFinish: 步骤完成回调 (可选)

@@ -109,8 +109,12 @@ export async function processFullStream<TOOLS extends Record<string, any> = Reco
 
     // 状态追踪
     const state = {
+        // 跨步骤累积，不在 reasoning-start/text-start 时重置
         reasoningText: '',
         responseText: '',
+        // 当前步骤内的局部文本，用于 onEnd 回调
+        stepReasoningText: '',
+        stepResponseText: '',
         currentStep: 0,
     };
 
@@ -123,15 +127,17 @@ export async function processFullStream<TOOLS extends Record<string, any> = Reco
             switch (chunk.type) {
                 // ============ 推理相关 ============
                 case 'reasoning-start':
-                    state.reasoningText = '';
+                    // 不重置全局累积，仅重置当前步骤局部值
+                    state.stepReasoningText = '';
                     if (debug) {
-                        console.log('[DEBUG] reasoning-start');
+                        console.log(`[DEBUG] reasoning-start (step=${state.currentStep}, accumulated_so_far=${state.reasoningText.length} chars)`);
                     }
                     await handlers.reasoning?.onStart?.();
                     break;
 
                 case 'reasoning-delta':
                     if (chunk.text) {
+                        state.stepReasoningText += chunk.text;
                         state.reasoningText += chunk.text;
                         if (debug) {
                             console.log(`[DEBUG] reasoning-delta: "${chunk.text.substring(0, 50)}${chunk.text.length > 50 ? '...' : ''}" (${chunk.text.length} chars)`);
@@ -142,27 +148,31 @@ export async function processFullStream<TOOLS extends Record<string, any> = Reco
 
                 case 'reasoning-end':
                     if (debug) {
-                        console.log(`[DEBUG] reasoning-end, total: ${state.reasoningText.length} chars`);
-                        console.log(`[DEBUG] Last 100 chars: "${state.reasoningText.substring(Math.max(0, state.reasoningText.length - 100))}"`);
+                        console.log(`[DEBUG] reasoning-end, step_reasoning=${state.stepReasoningText.length} chars, total_accumulated=${state.reasoningText.length} chars`);
+                        console.log(`[DEBUG] Step reasoning tail: "${state.stepReasoningText.substring(Math.max(0, state.stepReasoningText.length - 100))}"`);
                     }
-                    await handlers.reasoning?.onEnd?.(state.reasoningText);
+                    // onEnd 传递当前步骤的 reasoning（与 onStart/onDelta 语义一致）
+                    await handlers.reasoning?.onEnd?.(state.stepReasoningText);
                     break;
 
                 // ============ 文本响应相关 ============
                 case 'text-start':
-                    state.responseText = '';
+                    // 不重置全局累积，仅重置当前步骤局部值
+                    state.stepResponseText = '';
                     await handlers.text?.onStart?.();
                     break;
 
                 case 'text-delta':
                     if (chunk.text) {
+                        state.stepResponseText += chunk.text;
                         state.responseText += chunk.text;
                         await handlers.text?.onDelta?.(chunk.text);
                     }
                     break;
 
                 case 'text-end':
-                    await handlers.text?.onEnd?.(state.responseText);
+                    // onEnd 传递当前步骤的文本
+                    await handlers.text?.onEnd?.(state.stepResponseText);
                     break;
 
                 // ============ 工具调用相关 ============
@@ -218,23 +228,16 @@ export async function processFullStream<TOOLS extends Record<string, any> = Reco
 
         // 完成后的汇总信息
         if (handlers.onFinish) {
-            const [text, reasoning, finishReason, usage] = await Promise.all([
-                streamResult.text,
-                streamResult.reasoning,
+            const [finishReason, usage] = await Promise.all([
                 streamResult.finishReason,
                 streamResult.usage,
             ]);
 
-            // 处理 reasoning 可能是数组的情况
-            const reasoningText = Array.isArray(reasoning) 
-                ? JSON.stringify(reasoning, null, 2)
-                : typeof reasoning === 'string' 
-                    ? reasoning 
-                    : JSON.stringify(reasoning || '');
-
+            // 使用本地跨步骤累积值，而非 streamResult.text / streamResult.reasoning
+            // SDK 的这两个属性在多步骤模式下只包含最后一步的内容，会丢失中间步骤数据
             await handlers.onFinish({
-                text,
-                reasoning: reasoningText,
+                text: state.responseText,
+                reasoning: state.reasoningText,
                 finishReason,
                 usage,
             });

@@ -12,23 +12,27 @@ interface ThinkingBlockProps {
 
 export function ThinkingBlock({ label, text, collapsed = false, fullText }: ThinkingBlockProps) {
     if (collapsed && fullText) {
-        // 折叠视图：最精简的摘要
+        // 历史记录完整展示：显示所有内容，不折叠不省略
         const lines = fullText.split("\n").filter(l => l.trim().length > 0);
-        const summary = lines[0]?.slice(0, 60) ?? "";
+
         return (
-            <Box>
-                <Icon name="expand" color="gray" />
-                <Text color="gray"> </Text>
-                <Text color="gray">[{label}] </Text>
-                <Text color="gray" dimColor>{summary}{fullText.length > 60 ? "…" : ""} </Text>
-                <Text color="gray" dimColor>({fullText.length} chars)</Text>
+            <Box flexDirection="column" marginY={0}>
+                <Box>
+                    <Icon name="expand" color="gray" />
+                    <Text color="gray"> [{label}]</Text>
+                </Box>
+                {lines.map((line, i) => (
+                    <Box key={i} paddingLeft={2}>
+                        <Text color="gray" dimColor>{line}</Text>
+                    </Box>
+                ))}
             </Box>
         );
     }
 
-    // 运行态：冷峻的点阵/字符，加 Spinner
+    // 运行态：实时显示最后 4 行 + Spinner
     const lines = text.split("\n");
-    const visible = lines.slice(-4); // 显示最后 4 行，保持紧凑
+    const visible = lines.slice(-4);
 
     return (
         <Box flexDirection="column" paddingX={0} marginY={0}>

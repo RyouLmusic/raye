@@ -314,6 +314,12 @@ export type LoopInput = z.infer<typeof loopInput> & {
      * 不注入时 Loop 行为退化为纯 console.log 输出（后向兼容）。
      */
     observer?: LoopObserver;
+    /**
+     * 开启详细调试日志（可选，默认 false）。
+     * 启用后会在关键节点打印消息数组结构，帮助定位 schema 校验失败等问题。
+     * 也可通过环境变量 RAYE_DEBUG=1 全局开启。
+     */
+    debug?: boolean;
 };
 
 /**
@@ -434,5 +440,10 @@ export interface ExecuteInput {
      * 未提供时 executor 内部降级到 defaultExecuteHandlers。
      */
     streamHandlers?: StreamHandlers;
+    /**
+     * 开启详细调试日志（可选，默认 false）。
+     * 启用后在发起 LLM 调用前打印完整消息数组结构。
+     */
+    debug?: boolean;
 }
 

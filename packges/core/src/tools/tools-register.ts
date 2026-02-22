@@ -3,6 +3,8 @@
  * 提供工具的注册、管理和查询功能
  */
 import { calculate } from "@/tools/caculate.js";
+import { finish_task, ask_user } from "@/tools/control.js";
+import { spawn_agent } from "@/tools/task_tool.js";
 import type { Tool, ToolSet } from "ai";
 
 
@@ -23,6 +25,9 @@ class ToolRegistry {
      */
     private registerDefaults() {
         this.tools.set("calculate", calculate);
+        this.tools.set("finish_task", finish_task);
+        this.tools.set("ask_user", ask_user);
+        this.tools.set("spawn_agent", spawn_agent);
         // 添加更多默认工具...
     }
 
@@ -33,11 +38,11 @@ class ToolRegistry {
         if (this.locked) {
             throw new Error("Tool registry is locked. Cannot register new tools.");
         }
-        
+
         if (this.tools.has(name)) {
             console.warn(`Tool "${name}" already exists. Overwriting...`);
         }
-        
+
         this.tools.set(name, tool);
         console.log(`✓ Tool "${name}" registered successfully`);
     }
@@ -58,7 +63,7 @@ class ToolRegistry {
         if (this.locked) {
             throw new Error("Tool registry is locked. Cannot unregister tools.");
         }
-        
+
         const deleted = this.tools.delete(name);
         if (deleted) {
             console.log(`✓ Tool "${name}" unregistered`);
@@ -101,7 +106,7 @@ class ToolRegistry {
      */
     getByNames(names: string[]): ToolSet {
         const tools: ToolSet = {};
-        
+
         for (const name of names) {
             const tool = this.tools.get(name);
             if (tool) {
@@ -112,7 +117,7 @@ class ToolRegistry {
                 );
             }
         }
-        
+
         return tools;
     }
 
@@ -123,7 +128,7 @@ class ToolRegistry {
         if (this.locked) {
             throw new Error("Tool registry is locked. Cannot reset.");
         }
-        
+
         this.tools.clear();
         this.registerDefaults();
         console.log("Tool registry reset to defaults");

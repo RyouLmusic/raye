@@ -29,7 +29,7 @@
         "version": "1.0.0",
         "description": "Module for executing actions based on the agent's decisions.",
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "api_key": "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",
+        "api_key": "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",
         "model": "moonshotai/kimi-k2.5",
         "model_id": "kimi-k2.5",
         "provider": "moonshotai",
@@ -41,9 +41,39 @@
         "temperature": 0.7,
         "top_p": 0.9,
         "max_retries": 3,
+        "timeout": 1640000,
+        "tools": [
+            "calculate",
+            "finish_task",
+            "ask_user",
+            "spawn_agent"
+        ],
+        "tool_choice": "auto",
+        "mcp": {}
+    },
+    {
+        "name": "agent2",
+        "version": "1.0.0",
+        "description": "Module for executing actions based on the agent's decisions.",
+        "base_url": "https://api-inference.modelscope.cn/v1",
+        "api_key": "ms-844adaa7-2296-479a-9624-b251dab3b7d6",
+        "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+        "model_id": "Qwen3-235B-A22B-Instruct-2507",
+        "provider": "Qwen",
+        "extra_body": {
+            "enable_thinking": false
+        },
+        "prompt": "{AGENT_PROMPT}",
+        "max_output_tokens": 16384,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_retries": 3,
         "timeout": 640000,
         "tools": [
-            "calculate"
+            "calculate",
+            "finish_task",
+            "ask_user",
+            "spawn_agent"
         ],
         "tool_choice": "auto",
         "mcp": {}
@@ -67,7 +97,10 @@
         "max_retries": 3,
         "timeout": 640000,
         "tools": [
-            "calculate"
+            "calculate",
+            "finish_task",
+            "ask_user",
+            "spawn_agent"
         ],
         "tool_choice": "auto",
         "mcp": {}
@@ -125,7 +158,7 @@
         "version": "1.0.0",
         "description": "ReAct 模式下每轮循环的即时推理，基于当前观察决定下一步单一行动。",
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "api_key": "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",
+        "api_key": "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",
         "model": "z-ai/glm5",
         "model_id": "glm5",
         "provider": "ZhipuAI",
@@ -140,9 +173,11 @@
         "max_retries": 0,
         "timeout": 640000,
         "tools": [
-            "calculate"
+            "calculate",
+            "finish_task",
+            "ask_user"
         ],
-        "tool_choice": "none",
+        "tool_choice": "auto",
         "mcp": {}
     },
     {
@@ -150,7 +185,7 @@
         "version": "1.0.0",
         "description": "压缩对话内容",
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "api_key": "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",
+        "api_key": "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",
         "model": "qwen/qwen3.5-397b-a17b",
         "model_id": "qwen3.5-397b-a17b",
         "provider": "Qwen",

@@ -28,11 +28,13 @@ export interface AgentLoopUIState {
      * 各阶段正在 streaming 的文本（streaming 期间非空，完成后清空）
      * plan / reason → ThinkingBlock
      * execute       → StreamingBlock
+     * executeReasoning → ThinkingBlock (execute 阶段的思考过程)
      */
     streaming: {
         plan: string;
         reason: string;
         execute: string;
+        executeReasoning: string;
     };
     /** 当前 Loop 状态 */
     loopState: AgentLoopState | "IDLE";
@@ -48,7 +50,7 @@ export interface AgentLoopUIState {
 
 const INITIAL_STATE: AgentLoopUIState = {
     messages: [],
-    streaming: { plan: "", reason: "", execute: "" },
+    streaming: { plan: "", reason: "", execute: "", executeReasoning: "" },
     loopState: "IDLE",
     iteration: 0,
     maxIterations: 10,
@@ -63,12 +65,12 @@ function nextId() { return `msg-${++msgIdCounter}`; }
 export function useAgentLoop(agentConfig: AgentConfig, sessionId: string) {
     const [state, setState] = useState<AgentLoopUIState>(INITIAL_STATE);
     // 用 ref 跟踪当前 streaming 内容，避免在 onDelta 闭包中拿到旧 state
-    const streamingRef = useRef({ plan: "", reason: "", execute: "" });
+    const streamingRef = useRef({ plan: "", reason: "", execute: "", executeReasoning: "" });
 
     // ── 构建 observer ────────────────────────────────────────
     const buildObserver = useCallback((): LoopObserver => {
         // 每次 submit 重置 streaming 缓存
-        streamingRef.current = { plan: "", reason: "", execute: "" };
+        streamingRef.current = { plan: "", reason: "", execute: "", executeReasoning: "" };
 
         return {
             // ── Loop 级别 ──────────────────────────────────
@@ -77,7 +79,7 @@ export function useAgentLoop(agentConfig: AgentConfig, sessionId: string) {
                     ...s,
                     isRunning: true,
                     error: undefined,
-                    streaming: { plan: "", reason: "", execute: "" },
+                    streaming: { plan: "", reason: "", execute: "", executeReasoning: "" },
                 }));
             },
 
@@ -205,8 +207,32 @@ export function useAgentLoop(agentConfig: AgentConfig, sessionId: string) {
                 },
             },
 
-            // ── 主执行阶段 → streaming.execute + 工具调用 ──
+            // ── 主执行阶段 → streaming.execute + streaming.executeReasoning + 工具调用 ──
             executeHandlers: {
+                reasoning: {
+                    onDelta: (text: string) => {
+                        streamingRef.current.executeReasoning += text;
+                        setState(s => ({
+                            ...s,
+                            streaming: { ...s.streaming, executeReasoning: streamingRef.current.executeReasoning },
+                        }));
+                    },
+                    onEnd: (fullText: string) => {
+                        // 将 execute 阶段的 reasoning 保存为一条独立消息（可折叠）
+                        if (!fullText) return;
+                        streamingRef.current.executeReasoning = "";
+                        setState(s => ({
+                            ...s,
+                            streaming: { ...s.streaming, executeReasoning: "" },
+                            messages: [...s.messages, {
+                                id: nextId(),
+                                role: "assistant",
+                                content: fullText,
+                                phase: "reason", // 复用 reason phase，折叠显示
+                            }],
+                        }));
+                    },
+                },
                 text: {
                     onDelta: (text: string) => {
                         streamingRef.current.execute += text;
@@ -285,6 +311,7 @@ export function useAgentLoop(agentConfig: AgentConfig, sessionId: string) {
                 observer: buildObserver(),
                 maxIterations: 10,
                 compactThreshold: 20,
+                debug: false,
             });
         } catch (err) {
             setState(s => ({

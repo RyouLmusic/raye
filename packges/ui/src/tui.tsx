@@ -14,7 +14,7 @@ import { loadAndGetAgent } from "core/agent/agent";
 export function startTUI(options?: { sessionId?: string }) {
     const sessionId = options?.sessionId ?? `session-${Date.now()}`;
     const agents = loadAndGetAgent();
-    const agentConfig = agents.agent!;
+    const agentConfig = agents.agent2!;
 
     const { waitUntilExit } = render(
         <App agentConfig={agentConfig} sessionId={sessionId} />

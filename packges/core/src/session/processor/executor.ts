@@ -12,6 +12,7 @@ import type {
 } from "@/session/type";
 import { buildAssistantMessage } from "@/session/processor/utils";
 import { processResutlToSession } from ".";
+import { createLogger } from "common";
 
 export interface Executor {
     execute(input: ExecuteInput): Promise<ProcessorStepResult>;
@@ -29,31 +30,36 @@ export function createExecutor(): Executor {
 // ============ 默认回调 ============
 
 /**
- * 默认的 execute 阶段流式回调（降级到 console.log）
+ * 默认的 execute 阶段流式回调（使用 logger）
  * 当外部未注入 streamHandlers 时使用，保持原有的调试输出行为。
  */
-const defaultExecuteHandlers: StreamHandlers = {
-    reasoning: {
-        onStart: ()     => console.log("💭 [Executor] 开始推理..."),
-        onDelta: (text) => { process.stdout.write(text); },
-        onEnd:   ()     => console.log("\n⚡ [Executor] 推理完成"),
-    },
-    text: {
-        onStart: ()     => console.log("💡 [Executor] 输出响应..."),
-        onDelta: (text) => { process.stdout.write(text); },
-        onEnd:   (full) => console.log(`\n⚡ [Executor] 响应完成: ${full.substring(0, 80)}...`),
-    },
-    tool: {
-        onCall:   (id, name, args)   => console.log(`🔧 [Executor] 工具调用: ${name}`, args),
-        onResult: (id, name, result) => console.log(`✅ [Executor] 工具返回 - ${name}:`, result),
-    },
-    onError:  (err)    => console.error("❌ [Executor] 执行过程中发生错误:", err),
-    onFinish: (result) => {
-        console.log("🎉 [Executor] 执行流程结束");
-        console.log("结束原因:", result.finishReason);
-        console.log("使用量:", result.usage);
-    },
-};
+function createDefaultExecuteHandlers(): StreamHandlers {
+    const logger = createLogger("Executor", process.env.RAYE_DEBUG === "1");
+    return {
+        reasoning: {
+            onStart: ()     => logger.log("💭 开始推理..."),
+            onDelta: (text) => { process.stdout.write(text); },
+            onEnd:   ()     => logger.log("\n⚡ 推理完成"),
+        },
+        text: {
+            onStart: ()     => logger.log("💡 输出响应..."),
+            onDelta: (text) => { process.stdout.write(text); },
+            onEnd:   (full) => logger.log(`\n⚡ 响应完成: ${full.substring(0, 80)}...`),
+        },
+        tool: {
+            onCall:   (id, name, args)   => logger.log(`🔧 工具调用: ${name}`, args),
+            onResult: (id, name, result) => logger.log(`✅ 工具返回 - ${name}:`, result),
+        },
+        onError:  (err)    => logger.error("❌ 执行过程中发生错误:", err),
+        onFinish: (result) => {
+            logger.log("🎉 执行流程结束");
+            logger.log("结束原因:", result.finishReason);
+            logger.log("使用量:", result.usage);
+        },
+    };
+}
+
+const defaultExecuteHandlers = createDefaultExecuteHandlers();
 
 // ============ 执行函数 ============
 
@@ -80,8 +86,8 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
     const context: ProcessContext = {
         state: "IDLE",
         retryCount: 0,
-        maxRetries: input.maxRetries ?? 3,
-        retryDelay: 1000,
+        maxRetries: input.maxRetries ?? 5,  // 增加默认重试次数到 5
+        retryDelay: 2000,  // 增加初始延迟到 2 秒
     };
     const session = SessionContext.current();
     // 结果累积器（在 SUCCESS 状态组装为完整的 ProcessorStepResult）
@@ -94,7 +100,9 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
         toolCalls?: ProcessToolCall[];
         toolResults?: ToolExecutionResult[];
     } = { text: "", reasoning: "", finishReason: "stop" };
-    const messages = [...session.messages, ...input.messages];
+    // 直接使用调用方提供的完整消息列表（loop.ts 已传入 [...context.session.messages]）
+    // 不再与 session.messages 合并，否则会导致消息重复，引发 AI SDK schema 校验失败
+    const messages = input.messages;
     // CALLING → STREAMING 之间共享的流对象
     let streamResult: StreamTextResult<ToolSet, never> | undefined;
 
@@ -110,7 +118,55 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
 
             // ── CALLING - 发起 LLM API 调用 ─────────────────────────
             case "CALLING": {
+                const logger = createLogger("Executor", input.debug ?? false);
                 
+                const agentCfg = input.agent;
+                const toolNames = Array.isArray(agentCfg.tools) ? agentCfg.tools : [];
+                logger.log(`\n${"═".repeat(60)}`);
+                logger.log(`LLM 调用参数 (retry=${context.retryCount})`);
+                logger.log(`${"─".repeat(60)}`);
+                logger.log(`  agent        : ${agentCfg.name} v${agentCfg.version}`);
+                logger.log(`  model        : ${agentCfg.model}`);
+                logger.log(`  provider     : ${agentCfg.provider ?? "unknown"}`);
+                logger.log(`  base_url     : ${agentCfg.base_url}`);
+                logger.log(`  temperature  : ${input.temperature ?? agentCfg.temperature ?? "default"}`);
+                logger.log(`  top_p        : ${input.topP ?? agentCfg.top_p ?? "default"}`);
+                logger.log(`  maxOutputTok : ${input.maxOutputTokens ?? agentCfg.max_output_tokens ?? "default"}`);
+                logger.log(`  maxSteps     : 5`);
+                logger.log(`  maxRetries   : 0 (executor-managed)`);
+                logger.log(`  toolChoice   : ${JSON.stringify(input.toolChoice ?? agentCfg.tool_choice ?? "auto")}`);
+                logger.log(`  tools        : [${toolNames.join(", ")}]`);
+                if (agentCfg.extra_body && Object.keys(agentCfg.extra_body).length > 0) {
+                    logger.log(`  extra_body   : ${JSON.stringify(agentCfg.extra_body)}`);
+                }
+                logger.log(`${"─".repeat(60)}`);
+                logger.log(`  messages (count=${messages.length}):`);
+                messages.forEach((m, i) => {
+                    if (Array.isArray(m.content)) {
+                        logger.log(`  [${String(i).padStart(2, "0")}] role=${m.role}`);
+                        m.content.forEach((b: any, bi: number) => {
+                            if (b.type === "tool-call") {
+                                logger.log(`       [${bi}] tool-call  | name=${b.toolName}  id=${b.toolCallId}`);
+                                logger.log(`             args=${JSON.stringify(b.args ?? {})}`);
+                            } else if (b.type === "tool-result") {
+                                const outType = (b.output as any)?.type ?? typeof b.output;
+                                const outVal  = JSON.stringify((b.output as any)?.value ?? b.output).substring(0, 80);
+                                logger.log(`       [${bi}] tool-result| name=${b.toolName}  id=${b.toolCallId}`);
+                                logger.log(`             output=(${outType}) ${outVal}`);
+                            } else if (b.type === "text") {
+                                logger.log(`       [${bi}] text       | ${String(b.text ?? "").substring(0, 100)}`);
+                            } else if (b.type === "reasoning") {
+                                logger.log(`       [${bi}] reasoning  | ${String(b.text ?? "").substring(0, 60)}...`);
+                            } else {
+                                logger.log(`       [${bi}] ${b.type}`);
+                            }
+                        });
+                    } else {
+                        const text = String(m.content ?? "").substring(0, 120);
+                        logger.log(`  [${String(i).padStart(2, "0")}] role=${m.role} | ${text}`);
+                    }
+                });
+                logger.log(`${"═".repeat(60)}\n`);
                 try {
                     // 将 ExecuteInput 字段映射到 StreamTextInput，再调用 streamTextWrapper
                     // maxRetries: 0 —— 重试由状态机自身的 RETRYING 状态管理，不依赖 SDK 重试
@@ -133,9 +189,20 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                     context.state = "STREAMING";
                 } catch (error) {
                     context.error = error as Error;
-                    context.state = isRetryableError(error) && context.retryCount < context.maxRetries
-                        ? "RETRYING"
-                        : "ERROR";
+                    const retryInfo = getRetryInfo(error);
+                    
+                    if (retryInfo.isRetryable && context.retryCount < context.maxRetries) {
+                        context.state = "RETRYING";
+                        // 对于 429 错误，使用更长的延迟或 Retry-After 头指定的时间
+                        if (retryInfo.retryAfter) {
+                            context.retryDelay = retryInfo.retryAfter * 1000;
+                        } else if (retryInfo.statusCode === 429) {
+                            // 对于速率限制，初始延迟 5 秒起步
+                            context.retryDelay = Math.max(context.retryDelay, 5000);
+                        }
+                    } else {
+                        context.state = "ERROR";
+                    }
                 }
                 break;
             }
@@ -211,9 +278,18 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                         : "SUCCESS";
                 } catch (error) {
                     context.error = error as Error;
-                    context.state = isRetryableError(error) && context.retryCount < context.maxRetries
-                        ? "RETRYING"
-                        : "ERROR";
+                    const retryInfo = getRetryInfo(error);
+                    
+                    if (retryInfo.isRetryable && context.retryCount < context.maxRetries) {
+                        context.state = "RETRYING";
+                        if (retryInfo.retryAfter) {
+                            context.retryDelay = retryInfo.retryAfter * 1000;
+                        } else if (retryInfo.statusCode === 429) {
+                            context.retryDelay = Math.max(context.retryDelay, 5000);
+                        }
+                    } else {
+                        context.state = "ERROR";
+                    }
                 }
                 break;
             }
@@ -221,6 +297,9 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
             // ── RETRYING - 指数退避后重新发起调用 ────────────────────
             case "RETRYING": {
                 context.retryCount++;
+                
+                const logger = createLogger("Executor", input.debug ?? process.env.RAYE_DEBUG === "1");
+                logger.log(`⏳ 重试 ${context.retryCount}/${context.maxRetries}，等待 ${context.retryDelay}ms...`);
 
                 // 将本轮产生的 assistant message 和 tool-result 追加到 messages，
                 // 让 LLM 在重试时能看到上一轮的输出和工具执行结果
@@ -251,7 +330,8 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                                 type: "tool-result" as const,
                                 toolCallId: tr.toolCallId,
                                 toolName: tr.toolName,
-                                output: JSON.parse(tr.content),
+                                // AI SDK v6: must be ToolResultOutput typed object
+                                output: { type: "json" as const, value: JSON.parse(tr.content) },
                             }],
                         }));
                         messages.push(...toolResultMsgs);
@@ -270,9 +350,14 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                 // acc.toolCalls = undefined;
                 // acc.toolResults = undefined;
 
-                // 指数退避，最大 10 秒
+                // 指数退避，最大 30 秒（对于速率限制，需要更长的等待时间）
                 await sleep(context.retryDelay);
-                context.retryDelay = Math.min(context.retryDelay * 2, 10_000);
+                // 如果当前延迟已经很大（如设置了 Retry-After），下次仍保持较长延迟
+                if (context.retryDelay >= 5000) {
+                    context.retryDelay = Math.min(context.retryDelay * 1.5, 30_000);
+                } else {
+                    context.retryDelay = Math.min(context.retryDelay * 2, 30_000);
+                }
 
                 context.state = "CALLING";
                 break;
@@ -319,31 +404,64 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
  *   - 请求错误 (400 / 404)
  *   - 业务逻辑错误
  */
-function isRetryableError(error: unknown): boolean {
-    if (!error) return false;
+/**
+ * 获取重试信息（包括是否可重试、重试延迟等）
+ */
+function getRetryInfo(error: unknown): RetryInfo {
+    if (!error) {
+        return { isRetryable: false };
+    }
 
     const err = error as RetryableErrorShape;
-
+    const status = err.status ?? err.statusCode;
+    
+    // 检查网络错误
     if (err.code === "ECONNREFUSED" ||
         err.code === "ETIMEDOUT"    ||
         err.code === "ENOTFOUND") {
-        return true;
+        return { isRetryable: true };
     }
 
-    const status = err.status ?? err.statusCode;
+    // 检查 HTTP 状态码
     if (status === 429 ||
         status === 500 ||
         status === 502 ||
         status === 503 ||
         status === 504) {
-        return true;
+        
+        // 尝试获取 Retry-After 头
+        let retryAfter: number | undefined;
+        if (err.responseHeaders) {
+            const retryAfterHeader = err.responseHeaders['retry-after'] || 
+                                   err.responseHeaders['Retry-After'];
+            if (retryAfterHeader) {
+                const parsed = parseInt(String(retryAfterHeader), 10);
+                if (!isNaN(parsed)) {
+                    retryAfter = parsed;
+                }
+            }
+        }
+        
+        return { 
+            isRetryable: true, 
+            statusCode: status,
+            retryAfter 
+        };
     }
 
+    // 检查超时错误
     if (err.message?.toLowerCase().includes("timeout")) {
-        return true;
+        return { isRetryable: true };
     }
 
-    return false;
+    return { isRetryable: false };
+}
+
+/**
+ * 向后兼容的函数
+ */
+function isRetryableError(error: unknown): boolean {
+    return getRetryInfo(error).isRetryable;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -357,4 +475,11 @@ interface RetryableErrorShape {
     status?: number;
     statusCode?: number;
     message?: string;
+    responseHeaders?: Record<string, string | string[]>;
+}
+
+interface RetryInfo {
+    isRetryable: boolean;
+    statusCode?: number;
+    retryAfter?: number;  // 重试延迟（秒）
 }
