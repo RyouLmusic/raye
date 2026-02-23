@@ -7,6 +7,7 @@
 
 ### 设计文档
 - **[ASK-USER-UI-DESIGN.md](./ASK-USER-UI-DESIGN.md)** - UI 设计理念、颜色方案、组件层次
+- **[ASK-USER-SIMPLIFIED.md](./ASK-USER-SIMPLIFIED.md)** - 简化版 UI 设计说明
 - **[ASK-USER-VISUAL-DEMO.md](./ASK-USER-VISUAL-DEMO.md)** - 视觉效果演示、场景示例
 
 ### 技术文档

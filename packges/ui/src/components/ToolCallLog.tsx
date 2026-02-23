@@ -18,59 +18,63 @@ export function ToolCallLog({ msg }: ToolCallLogProps) {
         && toolResult !== null
         && "error" in toolResult;
 
-    // 特殊处理 ask_user 工具 - 使用醒目的样式
+    // 特殊处理 ask_user 工具 - 简化显示
     if (toolName === "ask_user") {
         const resultObj = toolResult as any;
-        const question = resultObj?.question || (toolArgs as any)?.question || "";
+        const argsObj = toolArgs as any;
+        const question = resultObj?.question || argsObj?.question || "";
         const answer = resultObj?.answer;
         const status = resultObj?.status;
 
-        // 如果已经有答案，显示问答对
+        // 如果已经有答案，显示完整的问答对
         if (status === "answered" && answer) {
             return (
                 <Box flexDirection="column" paddingLeft={0} marginY={1}>
-                    {/* 问题行 */}
+                    {/* 问题 */}
                     <Box>
-                        <Icon name="ask_user" color="yellowBright" />
-                        <Text color="yellowBright" bold> ASK_USER</Text>
-                        <Text color="gray"> </Text>
-                        <Icon name="arrow_right" color="gray" />
-                        <Text color="gray"> </Text>
+                        <Text color="yellowBright" bold>? </Text>
                         <Text color="yellow">{question}</Text>
                     </Box>
-                    {/* 答案行 */}
-                    <Box paddingLeft={2}>
-                        <Icon name="user_reply" color="cyanBright" />
-                        <Text color="cyanBright"> 用户回复: </Text>
+                    {/* 答案 */}
+                    <Box paddingLeft={2} marginTop={0}>
+                        <Text color="cyanBright">▶ </Text>
                         <Text color="cyan">{answer}</Text>
                     </Box>
                 </Box>
             );
         }
 
-        // 等待用户输入状态
+        // 等待用户输入状态（通常不会显示，因为模态框会覆盖）
         if (isPending || status === "waiting_for_user") {
             return (
                 <Box paddingLeft={0} marginY={1}>
-                    <Icon name="ask_user" color="yellowBright" />
-                    <Text color="yellowBright" bold> ASK_USER</Text>
-                    <Text color="gray"> </Text>
-                    <Icon name="arrow_right" color="gray" />
-                    <Text color="gray"> </Text>
+                    <Text color="yellowBright" bold>? </Text>
                     <Text color="yellow">{question}</Text>
                     <Text color="gray" dimColor> (等待输入...)</Text>
                 </Box>
             );
         }
 
-        // 默认显示（有问题但状态未知）
+        // 如果有答案但 status 不是 "answered"，也尝试显示
+        if (answer) {
+            return (
+                <Box flexDirection="column" paddingLeft={0} marginY={1}>
+                    <Box>
+                        <Text color="yellowBright" bold>? </Text>
+                        <Text color="yellow">{question}</Text>
+                    </Box>
+                    <Box paddingLeft={2} marginTop={0}>
+                        <Text color="cyanBright">▶ </Text>
+                        <Text color="cyan">{answer}</Text>
+                    </Box>
+                </Box>
+            );
+        }
+
+        // 默认显示（只有问题）
         return (
             <Box paddingLeft={0} marginY={1}>
-                <Icon name="ask_user" color="yellowBright" />
-                <Text color="yellowBright" bold> ASK_USER</Text>
-                <Text color="gray"> </Text>
-                <Icon name="arrow_right" color="gray" />
-                <Text color="gray"> </Text>
+                <Text color="yellowBright" bold>? </Text>
                 <Text color="yellow">{question}</Text>
             </Box>
         );

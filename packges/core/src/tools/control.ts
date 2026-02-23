@@ -64,12 +64,14 @@ export const ask_user = tool({
         if (globalAskUserHandler) {
             try {
                 const userReply = await globalAskUserHandler(args.question);
-                return {
+                const result = {
                     status: "answered",
                     question: args.question,
                     answer: userReply,
                     message: `用户回复: ${userReply}`,
                 };
+                console.log(`[Tool] ask_user result:`, result);
+                return result;
             } catch (error) {
                 return {
                     status: "error",

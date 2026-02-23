@@ -104,6 +104,29 @@ describe("ask_user 直接 UI 交互", () => {
         const result3 = await ask_user.execute!({ question: "问题3" });
         expect(result3.answer).toBe("第三次回答");
     });
+
+    test("返回值应该包含所有必需字段", async () => {
+        setAskUserHandler(async () => "测试答案");
+
+        const result = await ask_user.execute!({ question: "测试问题" }) as any;
+
+        // 验证字段存在
+        expect(result).toHaveProperty("status");
+        expect(result).toHaveProperty("question");
+        expect(result).toHaveProperty("answer");
+        expect(result).toHaveProperty("message");
+
+        // 验证字段类型
+        expect(typeof result.status).toBe("string");
+        expect(typeof result.question).toBe("string");
+        expect(typeof result.answer).toBe("string");
+        expect(typeof result.message).toBe("string");
+
+        // 验证字段值
+        expect(result.status).toBe("answered");
+        expect(result.question).toBe("测试问题");
+        expect(result.answer).toBe("测试答案");
+    });
 });
 
 /**
@@ -140,3 +163,4 @@ describe("ask_user 在 Agent Loop 中的使用", () => {
         clearAskUserHandler();
     });
 });
+
