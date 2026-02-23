@@ -24,7 +24,7 @@ export function createProcessor(): Processor {
 export function processResutlToSession(result: ProcessorStepResult): Session {
     let session = SessionContext.current();
 
-
+    console.log("Processing step result to session:", session);
     // 1. 将 assistant message 写入 session
     //    若有工具调用，需将 tool-call 内容块追加到 assistant message 的 content 数组中，
     //    否则 tool-result 消息将缺少对应的 tool-call，导致后续 LLM 上下文不完整。
@@ -77,6 +77,7 @@ export function processResutlToSession(result: ProcessorStepResult): Session {
             session = SessionOps.addTokens(session, usage.totalTokens);
         }
     }
+    console.log("Processed session:", session);
 
     return session;
 }

@@ -158,6 +158,7 @@ export namespace AgentLoop {
                     context.session = await SessionContext.run(context.session, () =>
                         Promise.resolve(processResutlToSession(executeResult))
                     );
+                    console.log(`Session after processing result:`, context.session);
                     // 保存执行元数据，供 makeDecision 使用
                     context.lastFinishReason = executeResult.finishReason;
                     context.lastToolCallCount = executeResult.toolCalls?.length ?? 0;
