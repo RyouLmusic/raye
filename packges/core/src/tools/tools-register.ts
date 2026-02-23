@@ -5,6 +5,7 @@
 import { calculate } from "@/tools/caculate.js";
 import { finish_task, ask_user } from "@/tools/control.js";
 import { spawn_agent } from "@/tools/task_tool.js";
+import { web_search } from "@/tools/search.js";
 import type { Tool, ToolSet } from "ai";
 
 
@@ -28,6 +29,7 @@ class ToolRegistry {
         this.tools.set("finish_task", finish_task);
         this.tools.set("ask_user", ask_user);
         this.tools.set("spawn_agent", spawn_agent);
+        this.tools.set("web_search", web_search);
         // 添加更多默认工具...
     }
 
@@ -183,6 +185,7 @@ export type ToolName = string;
  */
 export const staticToolRegistry = {
     calculate,
+    web_search,
     // 添加更多静态工具...
 } as const;
 

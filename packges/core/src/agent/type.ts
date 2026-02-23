@@ -16,6 +16,7 @@ export const agentConfig = z.object({
     temperature: z.number().optional(),
     top_p: z.number().optional(),
     max_retries: z.number().optional(),
+    max_steps: z.number().optional(),
     timeout: z.number().optional(),  // 超时时间，单位为毫秒
     tools: z.array(z.string()).default([]),  // 字符串数组（工具名称）
     tool_choice: z.union([

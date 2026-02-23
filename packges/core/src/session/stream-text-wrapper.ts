@@ -77,6 +77,7 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
             .join("\n"),
     )
 
+    const maxSteps = input.maxSteps ?? agentConfig.max_steps ?? 1;
 
     // 优先使用传入的工具，否则使用 agentConfig 中定义的工具
     let tools: ToolSet | undefined = input.tools;
@@ -247,7 +248,7 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
          * 通过 maxSteps 转换而来：maxSteps=N → stopWhen: stepCountIs(N)
          * 默认: stepCountIs(1)（单步，不自动循环）
          */
-        ...(input.maxSteps !== undefined && { stopWhen: stepCountIs(input.maxSteps) }),
+        ...(maxSteps !== undefined && { stopWhen: stepCountIs(maxSteps) }),
 
         /**
          * prepareStep: 步骤准备函数 (可选)
