@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import type { AgentConfig } from "core/agent/type";
 import type { LoopObserver, AgentLoopState, LoopInput } from "core/session/type";
 import { AgentLoop } from "core/session/loop";
+import { setAskUserHandler, clearAskUserHandler } from "core/tools/control";
 
 // ── 消息类型 ──────────────────────────────────────────────
 
@@ -62,10 +63,29 @@ const INITIAL_STATE: AgentLoopUIState = {
 let msgIdCounter = 0;
 function nextId() { return `msg-${++msgIdCounter}`; }
 
-export function useAgentLoop(agentConfig: AgentConfig, sessionId: string) {
+export interface UseAgentLoopOptions {
+    /** 当 ask_user 工具被调用时触发，返回 Promise<string> 作为用户回复 */
+    onAskUser?: (question: string) => Promise<string>;
+}
+
+export function useAgentLoop(
+    agentConfig: AgentConfig, 
+    sessionId: string,
+    options?: UseAgentLoopOptions
+) {
     const [state, setState] = useState<AgentLoopUIState>(INITIAL_STATE);
     // 用 ref 跟踪当前 streaming 内容，避免在 onDelta 闭包中拿到旧 state
     const streamingRef = useRef({ plan: "", reason: "", execute: "", executeReasoning: "" });
+
+    // 设置全局 ask_user 回调
+    useEffect(() => {
+        if (options?.onAskUser) {
+            setAskUserHandler(options.onAskUser);
+        }
+        return () => {
+            clearAskUserHandler();
+        };
+    }, [options?.onAskUser]);
 
     // ── 构建 observer ────────────────────────────────────────
     const buildObserver = useCallback((): LoopObserver => {
@@ -280,7 +300,25 @@ export function useAgentLoop(agentConfig: AgentConfig, sessionId: string) {
                                 m => m.role === "tool" && m.toolCallId === _id
                             );
                             if (idx !== -1) {
-                                msgs[idx] = { ...msgs[idx]!, toolResult: result, content: JSON.stringify(result) };
+                                const resultObj = result as any;
+                                // 特殊处理 ask_user 工具：显示问题和答案
+                                let displayContent: string;
+                                if (name === "ask_user") {
+                                    if (resultObj?.status === "answered") {
+                                        displayContent = `❓ ${resultObj.question}\n✅ ${resultObj.answer}`;
+                                    } else if (resultObj?.question) {
+                                        displayContent = `❓ ${resultObj.question}`;
+                                    } else {
+                                        displayContent = JSON.stringify(result);
+                                    }
+                                } else {
+                                    displayContent = JSON.stringify(result);
+                                }
+                                msgs[idx] = { 
+                                    ...msgs[idx]!, 
+                                    toolResult: result, 
+                                    content: displayContent 
+                                };
                             }
                             return { ...s, messages: msgs };
                         });

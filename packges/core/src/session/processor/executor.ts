@@ -191,16 +191,29 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                     context.error = error as Error;
                     const retryInfo = getRetryInfo(error);
                     
+                    const logger = createLogger("Executor", input.debug ?? process.env.RAYE_DEBUG === "1");
+                    
                     if (retryInfo.isRetryable && context.retryCount < context.maxRetries) {
+                        // 记录错误类型和重试信息
+                        const err = error as any;
+                        const errorType = err.name || "Unknown";
+                        const errorMsg = err.message?.substring(0, 100) || "No message";
+                        
+                        logger.warn(`⚠️  LLM 调用失败 (${errorType}): ${errorMsg}`);
+                        logger.log(`🔄 将在 ${context.retryDelay}ms 后重试 (${context.retryCount + 1}/${context.maxRetries})`);
+                        
                         context.state = "RETRYING";
-                        // 对于 429 错误，使用更长的延迟或 Retry-After 头指定的时间
-                        if (retryInfo.retryAfter) {
+                        // 对于类型验证错误，使用较短的延迟（1秒）
+                        if (err.name === "AI_TypeValidationError") {
+                            context.retryDelay = 1000;
+                        } else if (retryInfo.retryAfter) {
                             context.retryDelay = retryInfo.retryAfter * 1000;
                         } else if (retryInfo.statusCode === 429) {
                             // 对于速率限制，初始延迟 5 秒起步
                             context.retryDelay = Math.max(context.retryDelay, 5000);
                         }
                     } else {
+                        logger.error(`❌ LLM 调用失败，无法重试或已达最大重试次数`);
                         context.state = "ERROR";
                     }
                 }
@@ -280,7 +293,17 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                     context.error = error as Error;
                     const retryInfo = getRetryInfo(error);
                     
+                    const logger = createLogger("Executor", input.debug ?? process.env.RAYE_DEBUG === "1");
+                    
                     if (retryInfo.isRetryable && context.retryCount < context.maxRetries) {
+                        // 记录错误类型和重试信息
+                        const err = error as any;
+                        const errorType = err.name || "Unknown";
+                        const errorMsg = err.message?.substring(0, 100) || "No message";
+                        
+                        logger.warn(`⚠️  LLM 调用失败 (${errorType}): ${errorMsg}`);
+                        logger.log(`🔄 将在 ${context.retryDelay}ms 后重试 (${context.retryCount + 1}/${context.maxRetries})`);
+                        
                         context.state = "RETRYING";
                         if (retryInfo.retryAfter) {
                             context.retryDelay = retryInfo.retryAfter * 1000;
@@ -288,6 +311,7 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                             context.retryDelay = Math.max(context.retryDelay, 5000);
                         }
                     } else {
+                        logger.error(`❌ LLM 调用失败，无法重试或已达最大重试次数`);
                         context.state = "ERROR";
                     }
                 }
@@ -415,6 +439,14 @@ function getRetryInfo(error: unknown): RetryInfo {
     const err = error as RetryableErrorShape;
     const status = err.status ?? err.statusCode;
     
+    // 检查 AI SDK 类型验证错误（模型返回格式不符合预期）
+    // 这类错误通常是临时的，可以重试
+    if (err.name === "AI_TypeValidationError" || 
+        err.message?.includes("Type validation failed") ||
+        err.message?.includes("Invalid input")) {
+        return { isRetryable: true };
+    }
+    
     // 检查网络错误
     if (err.code === "ECONNREFUSED" ||
         err.code === "ETIMEDOUT"    ||
@@ -471,6 +503,7 @@ function sleep(ms: number): Promise<void> {
 // ── 内部辅助类型 ──────────────────────────────────────────────────
 
 interface RetryableErrorShape {
+    name?: string;
     code?: string;
     status?: number;
     statusCode?: number;

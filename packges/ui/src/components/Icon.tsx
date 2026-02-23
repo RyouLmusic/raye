@@ -10,7 +10,9 @@ export type IconName =
     | "error"
     | "expand"
     | "collapse"
-    | "arrow_right";
+    | "arrow_right"
+    | "ask_user"
+    | "user_reply";
 
 export interface IconProps extends TextProps {
     name: IconName;
@@ -25,6 +27,8 @@ const icons: Record<IconName, string> = {
     expand: "+",
     collapse: "-",
     arrow_right: "→",
+    ask_user: "?",
+    user_reply: "✓",
 };
 
 /**

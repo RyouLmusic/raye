@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { Box } from "ink";
 import type { AgentConfig } from "core/agent/type";
 import { useAgentLoop } from "./hooks/useAgentLoop";
@@ -7,6 +7,7 @@ import { StreamingBlock } from "./components/StreamingBlock";
 import { ThinkingBlock } from "./components/ThinkingBlock";
 import { StatusBar } from "./components/StatusBar";
 import { PromptInput } from "./components/PromptInput";
+import { AskUserModal } from "./components/AskUserModal";
 
 interface AppProps {
     agentConfig: AgentConfig;
@@ -21,11 +22,34 @@ interface AppProps {
  *   MessageList        — 通过 <Static> 印在终端缓冲区的历史记录
  *   ThinkingBlock      — 当前 streaming 态的暗灰色思考内容
  *   StreamingBlock     — 当前 execute 的输出
+ *   AskUserModal       — ask_user 工具触发的实时输入框
  *   PromptInput        — 提供用户输入
  */
 export function App({ agentConfig, sessionId }: AppProps) {
-    const { state, submit } = useAgentLoop(agentConfig, sessionId);
+    // ask_user 状态管理
+    const [pendingQuestion, setPendingQuestion] = useState<{
+        question: string;
+        resolve: (answer: string) => void;
+    } | null>(null);
+
+    const { state, submit } = useAgentLoop(agentConfig, sessionId, {
+        // 🔥 当 LLM 调用 ask_user 时触发
+        onAskUser: async (question: string) => {
+            return new Promise<string>((resolve) => {
+                setPendingQuestion({ question, resolve });
+            });
+        }
+    });
+
     const { streaming, messages, loopState, iteration, maxIterations, isRunning, error } = state;
+
+    // 处理用户回复
+    const handleAskUserSubmit = (answer: string) => {
+        if (pendingQuestion) {
+            pendingQuestion.resolve(answer);
+            setPendingQuestion(null);
+        }
+    };
 
     return (
         <Box flexDirection="column">
@@ -56,9 +80,18 @@ export function App({ agentConfig, sessionId }: AppProps) {
                 )}
             </Box>
 
-            {/* 用户交互区 */}
+            {/* ask_user 模态框 - 优先级高于普通输入 */}
+            {pendingQuestion && (
+                <AskUserModal
+                    question={pendingQuestion.question}
+                    onSubmit={handleAskUserSubmit}
+                    showCancelHint={true}
+                />
+            )}
+
+            {/* 用户交互区 - 当 ask_user 激活时禁用 */}
             <PromptInput
-                disabled={isRunning}
+                disabled={isRunning || !!pendingQuestion}
                 onSubmit={submit}
                 error={error}
             />

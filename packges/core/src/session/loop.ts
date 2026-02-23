@@ -173,13 +173,20 @@ export namespace AgentLoop {
                 } catch (error) {
                     const err = error as any;
                     const statusCode = err?.statusCode || err?.status;
+                    const errorName = err?.name;
                     
                     if (statusCode === 429) {
                         logger.error(`⚠️  LLM 调用失败 - 速率限制 (429 Too Many Requests)`);
                         logger.error(`   模型: ${input.agentConfig.model}`);
                         logger.error(`   建议: 请稍后重试，或考虑使用其他模型/API 提供商`);
+                    } else if (errorName === "AI_TypeValidationError") {
+                        logger.error(`⚠️  LLM 调用失败 - 响应格式错误 (AI_TypeValidationError)`);
+                        logger.error(`   模型: ${input.agentConfig.model}`);
+                        logger.error(`   提供商: ${input.agentConfig.provider}`);
+                        logger.error(`   建议: 该模型可能不完全兼容 OpenAI API 格式，考虑更换模型或提供商`);
+                        logger.error(`   注意: 系统已自动重试 ${input.agentConfig.max_retries ?? 5} 次但仍失败`);
                     } else {
-                        logger.error(`LLM 调用失败:`, error);
+                        logger.error(`❌ LLM 调用失败:`, error);
                     }
                     
                     context.error = error as Error;
@@ -349,6 +356,38 @@ export namespace AgentLoop {
     }
 
     /**
+     * 检查消息历史中是否存在 ask_user 工具调用
+     *
+     * 遍历所有消息，查找任何 role="assistant" 的消息中是否包含 ask_user 工具调用。
+     * 用于 P0.5 优先级检查，确保无论 finishReason 是什么值，只要检测到 ask_user 就立即停止。
+     *
+     * @param messages - 消息历史数组
+     * @returns 如果找到 ask_user 工具调用返回 true，否则返回 false
+     */
+    function hasAskUserToolCall(messages: readonly any[]): boolean {
+        for (const message of messages) {
+            // 只检查 assistant 消息
+            if (message?.role !== "assistant") continue;
+
+            const content = message.content;
+            // 检查 content 是否为数组（包含 tool-call 块）
+            if (!Array.isArray(content)) continue;
+
+            // 查找是否有 ask_user 工具调用
+            const hasAskUser = content.some((block: any) =>
+                block?.type === "tool-call" && block?.toolName === "ask_user"
+            );
+
+            if (hasAskUser) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+
+    /**
      * 根据执行结果做出决策 — 判断 ReAct 循环是否应该继续
      *
      * # 设计背景
@@ -404,7 +443,7 @@ export namespace AgentLoop {
      *
      * # 优先级
      *
-     * P0 上下文压缩  >  P1 finishReason  >  P2 消息结构  >  P3 默认 continue
+     * P0 上下文压缩  >  P0.5 控制流工具  >  P1 finishReason  >  P2 消息结构  >  P3 默认 continue
      */
     function makeDecision(context: AgentLoopContext, lastMessage: any, logger: ReturnType<typeof createLogger>): LoopDecision {
         const fr = context.lastFinishReason;
@@ -415,6 +454,12 @@ export namespace AgentLoop {
         if (context.needsCompaction || shouldCompact(context)) {
             decisionLogger.log(`需要压缩上下文 (messages=${context.session.messages.length}, threshold=${context.compactThreshold}) → compact`);
             return "compact";
+        }
+
+        // ── P0.5: 控制流工具检查（优先级高于 finishReason）──────────
+        if (hasAskUserToolCall(context.session.messages)) {
+            decisionLogger.log(`检测到 ask_user 工具调用 → stop (等待用户介入)`);
+            return "stop";
         }
 
         // ── P1: finishReason（最权威信号）────────────────────────
@@ -457,10 +502,6 @@ export namespace AgentLoop {
             if (Array.isArray(content)) {
                 if (content.some((b: any) => b.type === "tool-call" && b.toolName === "finish_task")) {
                     decisionLogger.log(`检测到 finish_task 工具调用 → stop`);
-                    return "stop";
-                }
-                if (content.some((b: any) => b.type === "tool-call" && b.toolName === "ask_user")) {
-                    decisionLogger.log(`检测到 ask_user 工具调用 → stop (等待用户介入)`);
                     return "stop";
                 }
             }
