@@ -325,7 +325,7 @@ export async function streamTextWrapper<TOOLS extends ToolSet = ToolSet>(input: 
          * onStepFinish: 步骤完成回调 (可选)
          * 在每个步骤 (LLM 调用) 完成时调用，包括中间步骤
          */
-        // onStepFinish: async ({ text, usage }) => { console.log('步骤完成'); },
+        ...(input.onStepFinish && { onStepFinish: input.onStepFinish }),
 
         // ============ 实验性参数 ============
         /**

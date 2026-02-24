@@ -4,6 +4,7 @@ import type { ProcessorStepResult } from "@/session/type";
 import { SessionContext, SessionOps } from "../seesion";
 import type { Session } from "@/session/type";
 import type { ModelMessage } from "ai";
+import { createLogger } from "common";
 
 export interface Processor {
     execute: ReturnType<typeof createExecutor>["execute"];
@@ -21,10 +22,34 @@ export function createProcessor(): Processor {
 }
 
 
-export function processResutlToSession(result: ProcessorStepResult): Session {
-    let session = SessionContext.current();
-
-    console.log("Processing step result to session:", session);
+export function processResutlToSession(result: ProcessorStepResult, inputSession?: Session, debug?: boolean): Session {
+    let session = inputSession ?? SessionContext.current();
+    const logger = createLogger("processResutlToSession", debug??false);
+    logger.log("Processing step result to session:", JSON.stringify({
+        sessionId: session.sessionId,
+        messageCount: session.messages.length,
+        messages: session.messages.map((m, i) => ({
+            index: i,
+            role: m.role,
+            content: Array.isArray(m.content) 
+                ? m.content.map(c => ({ type: (c as any).type, preview: JSON.stringify(c).substring(0, 100) }))
+                : typeof m.content === 'string' ? m.content.substring(0, 100) : m.content
+        }))
+    }, null, 2));
+    
+    logger.log("Result to process:", JSON.stringify({
+        text: result.text.substring(0, 100),
+        reasoning: result.reasoning.substring(0, 100),
+        finishReason: result.finishReason,
+        hasToolCalls: !!result.toolCalls && result.toolCalls.length > 0,
+        toolCallsCount: result.toolCalls?.length ?? 0,
+        hasToolResults: !!result.toolResults && result.toolResults.length > 0,
+        toolResultsCount: result.toolResults?.length ?? 0,
+        messageContent: Array.isArray(result.message.content)
+            ? result.message.content.map(c => ({ type: (c as any).type, text: (c as any).text?.substring(0, 100) }))
+            : typeof result.message.content === 'string' ? result.message.content.substring(0, 100) : result.message.content
+    }, null, 2));
+    
     // 1. 将 assistant message 写入 session
     //    若有工具调用，需将 tool-call 内容块追加到 assistant message 的 content 数组中，
     //    否则 tool-result 消息将缺少对应的 tool-call，导致后续 LLM 上下文不完整。
@@ -77,7 +102,23 @@ export function processResutlToSession(result: ProcessorStepResult): Session {
             session = SessionOps.addTokens(session, usage.totalTokens);
         }
     }
-    console.log("Processed session:", session);
+    
+    logger.log("Processed session:", JSON.stringify({
+        sessionId: session.sessionId,
+        messageCount: session.messages.length,
+        messages: session.messages.map((m, i) => ({
+            index: i,
+            role: m.role,
+            content: Array.isArray(m.content) 
+                ? m.content.map(c => ({ 
+                    type: (c as any).type, 
+                    text: (c as any).text?.substring(0, 100),
+                    toolName: (c as any).toolName,
+                    toolCallId: (c as any).toolCallId
+                }))
+                : typeof m.content === 'string' ? m.content.substring(0, 100) : m.content
+        }))
+    }, null, 2));
 
     return session;
 }

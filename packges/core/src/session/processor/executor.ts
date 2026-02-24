@@ -11,7 +11,6 @@ import type {
     ProcessorStepResult,
 } from "@/session/type";
 import { buildAssistantMessage } from "@/session/processor/utils";
-import { processResutlToSession } from ".";
 import { createLogger } from "common";
 
 export interface Executor {
@@ -168,6 +167,12 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                 });
                 logger.log(`${"═".repeat(60)}\n`);
                 try {
+                    // 创建 AbortController 用于提前终止
+                    const abortController = new AbortController();
+                    const combinedSignal = input.abortSignal 
+                        ? AbortSignal.any([input.abortSignal, abortController.signal])
+                        : abortController.signal;
+
                     // 将 ExecuteInput 字段映射到 StreamTextInput，再调用 streamTextWrapper
                     // maxRetries: 0 —— 重试由状态机自身的 RETRYING 状态管理，不依赖 SDK 重试
                     streamResult = await streamTextWrapper({
@@ -179,11 +184,24 @@ async function execute(input: ExecuteInput): Promise<ProcessorStepResult> {
                         temperature:     input.temperature,
                         topP:            input.topP,
                         maxRetries:      0,
-                        abortSignal:     input.abortSignal,
+                        abortSignal:     combinedSignal,
                         // 允许 SDK 完成完整的 LLM→工具→LLM 循环，避免 finishReason="tool-calls"
                         // 触发外层 ReAct 循环重新进入 PLANNING，导致 Reasoner 收到
                         // 残留 tool-result 消息而报 InvalidPromptError
-                        // maxSteps:        5,
+                        maxSteps:        10,  // 设置最大步数，防止无限循环
+                        // 在每个步骤完成后检查是否有 finish_task 调用
+                        onStepFinish: async (step) => {
+                            // 检查当前步骤的工具调用中是否包含 finish_task
+                            const hasFinishTask = step.toolCalls?.some(
+                                (tc: any) => tc.toolName === "finish_task"
+                            );
+                            
+                            if (hasFinishTask) {
+                                logger.log(`🛑 检测到 finish_task 调用，提前终止内层循环`);
+                                // 中止后续的工具调用循环
+                                abortController.abort();
+                            }
+                        },
                     });
 
                     context.state = "STREAMING";

@@ -155,10 +155,23 @@ export namespace AgentLoop {
                         streamHandlers: input.observer?.executeHandlers,
                         debug: input.debug ?? (process.env.RAYE_DEBUG === "1"),
                     });
-                    context.session = await SessionContext.run(context.session, () =>
-                        Promise.resolve(processResutlToSession(executeResult))
-                    );
-                    console.log(`Session after processing result:`, context.session);
+                    context.session = processResutlToSession(executeResult, context.session, input.debug ?? (process.env.RAYE_DEBUG === "1"));
+                    logger.log(`Session after processing result:`, JSON.stringify({
+                        sessionId: context.session.sessionId,
+                        messageCount: context.session.messages.length,
+                        messages: context.session.messages.map((m, i) => ({
+                            index: i,
+                            role: m.role,
+                            content: Array.isArray(m.content) 
+                                ? m.content.map(c => ({ 
+                                    type: (c as any).type, 
+                                    text: (c as any).text?.substring(0, 100),
+                                    toolName: (c as any).toolName,
+                                    toolCallId: (c as any).toolCallId
+                                }))
+                                : typeof m.content === 'string' ? m.content.substring(0, 100) : m.content
+                        }))
+                    }, null, 2));
                     // 保存执行元数据，供 makeDecision 使用
                     context.lastFinishReason = executeResult.finishReason;
                     context.lastToolCallCount = executeResult.toolCalls?.length ?? 0;
@@ -387,6 +400,37 @@ export namespace AgentLoop {
         return false;
     }
 
+    /**
+     * 检查消息历史中是否存在 finish_task 工具调用
+     *
+     * 遍历所有消息，查找任何 role="assistant" 的消息中是否包含 finish_task 工具调用。
+     * 用于 P0.5 优先级检查，确保无论 finishReason 是什么值，只要检测到 finish_task 就立即停止。
+     *
+     * @param messages - 消息历史数组
+     * @returns 如果找到 finish_task 工具调用返回 true，否则返回 false
+     */
+    function hasFinishTaskToolCall(messages: readonly any[]): boolean {
+        for (const message of messages) {
+            // 只检查 assistant 消息
+            if (message?.role !== "assistant") continue;
+
+            const content = message.content;
+            // 检查 content 是否为数组（包含 tool-call 块）
+            if (!Array.isArray(content)) continue;
+
+            // 查找是否有 finish_task 工具调用
+            const hasFinishTask = content.some((block: any) =>
+                block?.type === "tool-call" && block?.toolName === "finish_task"
+            );
+
+            if (hasFinishTask) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
 
     /**
      * 根据执行结果做出决策 — 判断 ReAct 循环是否应该继续
@@ -463,6 +507,11 @@ export namespace AgentLoop {
             return "stop";
         }
 
+        if (hasFinishTaskToolCall(context.session.messages)) {
+            decisionLogger.log(`检测到 finish_task 工具调用 → stop (任务完成)`);
+            return "stop";
+        }
+
         // ── P1: finishReason（最权威信号）────────────────────────
         if (fr) {
             switch (fr) {
@@ -494,17 +543,6 @@ export namespace AgentLoop {
                 default:
                     decisionLogger.warn(`未知 finishReason="${fr}", toolCalls=${tc} → 降级到消息分析`);
                     break;
-            }
-        }
-
-        // ── P1.5: 特定控制工具的强制流转 ──────────────────────────
-        if (lastMessage && lastMessage.role === "assistant" && hasToolCallContent(lastMessage)) {
-            const content = lastMessage.content;
-            if (Array.isArray(content)) {
-                if (content.some((b: any) => b.type === "tool-call" && b.toolName === "finish_task")) {
-                    decisionLogger.log(`检测到 finish_task 工具调用 → stop`);
-                    return "stop";
-                }
             }
         }
 

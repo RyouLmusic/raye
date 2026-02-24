@@ -5,19 +5,39 @@ import { z } from "zod";
  * 结束任务工具
  * 
  * 当大模型认为任务已完成时,必须调用此工具以告知外层循环退出。
+ * 
+ * 重要：此工具调用后会立即终止对话循环，不会再有后续交互。
+ * 工具返回的结果仅用于系统内部状态标记，不会作为新消息添加到对话历史中。
  */
 export const finish_task = tool({
-    description: "当任务已按照用户需求全部完成，代码修改完毕且测试通过时调用此工具。",
+    description: `当你已经完全完成用户的所有需求时，调用此工具结束任务。
+
+使用时机：
+- ✅ 所有子任务都已完成
+- ✅ 用户的问题已经得到完整回答
+- ✅ 没有遗留的待办事项
+- ✅ 不需要等待用户的进一步指示
+
+注意事项：
+- 调用此工具后，对话会立即终止，你不会再收到任何响应
+- 在调用前，确保你已经给用户提供了完整的答案或完成了所有操作
+- 如果任务只完成了一部分，不要调用此工具
+- 如果需要用户确认或提供更多信息，使用 ask_user 工具而不是此工具`,
+    
     inputSchema: z.object({
-        summary: z.string().describe("用一句话简练总结你完成的工作内容。"),
+        summary: z.string().describe("用一句话简洁总结你完成的工作内容（例如：'已完成代码重构并通过测试'）"),
     }),
-    execute: async (args) => {
-        console.log(`[Tool] finish_task: ${args.summary}`);
-        // 返回明确的完成标识，循环可以通过识别此工具调用来停止
+    
+    execute: async ({ summary }) => {
+        console.log(`[Tool] finish_task: ${summary}`);
+        
+        // 返回简洁的完成标识
+        // 注意：这个返回值主要用于系统内部检测，不会作为对话消息
         return {
             status: "finished",
-            summary: args.summary,
-            message: "任务已完成，系统将终止。请等待进程退出。"
+            summary: summary,
+            // 返回简短确认，避免冗长文本影响上下文
+            message: "✓ 任务完成"
         };
     }
 });

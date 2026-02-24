@@ -55,6 +55,8 @@ export type StreamTextInput<TOOLS extends ToolSet = ToolSet> = {
     onFinish?: StreamTextOnFinishCallback<TOOLS>;
     /** 错误回调（可选）- 在流处理过程中发生错误时调用 */
     onError?: StreamTextOnErrorCallback;
+    /** 步骤完成回调（可选）- 在每个步骤（LLM 调用）完成时调用，包括中间步骤 */
+    onStepFinish?: (step: any) => Promise<void> | void;
 };
 
 // ============ 状态机定义 ============
