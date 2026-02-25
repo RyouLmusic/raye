@@ -11,4 +11,7 @@ export type {
 } from "@/session/type";
 
 // ── Agent types ───────────────────────────────────────────
-export type { AgentConfig } from "@/agent/type";
+export type { AgentConfig, BehaviorConfig, ConnectionConfig } from "@/agent/type";
+
+// ── Agent functions ───────────────────────────────────────
+export { loadAndGetAgent, loadBehaviorConfig, getAvailableBehaviors } from "@/agent/agent";

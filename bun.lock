@@ -38,6 +38,9 @@
     },
     "packges/common": {
       "name": "common",
+      "dependencies": {
+        "chalk": "^5.3.0",
+      },
       "devDependencies": {
         "@types/bun": "latest",
         "@types/node": "latest",

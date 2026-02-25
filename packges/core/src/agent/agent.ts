@@ -50,3 +50,48 @@ export function loadAndGetAgent(): Record<string, AgentConfig> {
         return record;
     }, {} as Record<string, AgentConfig>);
 }
+
+/**
+ * 加载指定名称的行为配置
+ * 
+ * @param name - 行为配置名称（如 'agent', 'plan', 'summary'）
+ * @returns 行为配置对象
+ * @throws 如果配置不存在
+ */
+export function loadBehaviorConfig(name: string): import('@/agent/type.js').BehaviorConfig {
+    const agents = loadAndGetAgent();
+    const agent = agents[name];
+    
+    if (!agent) {
+        const available = Object.keys(agents).join(', ');
+        throw new Error(
+            `Unknown behavior config: "${name}"\n` +
+            `Available configs: ${available}`
+        );
+    }
+    
+    // 只返回行为相关的配置（不包含连接信息）
+    return {
+        model_id: agent.model_id,
+        provider: agent.provider,
+        tools: agent.tools,
+        prompt: agent.prompt || '',
+        tool_choice: agent.tool_choice,
+        extra_body: agent.extra_body,
+        max_output_tokens: agent.max_output_tokens,
+        temperature: agent.temperature,
+        top_p: agent.top_p,
+        max_steps: agent.max_steps,
+        version: agent.version,
+        description: agent.description,
+        mcp: agent.mcp,
+    };
+}
+
+/**
+ * 获取所有可用的行为配置名称
+ */
+export function getAvailableBehaviors(): string[] {
+    const agents = loadAndGetAgent();
+    return Object.keys(agents);
+}

@@ -42,3 +42,61 @@ export type AgentConfig = Omit<BaseAgentConfig, 'tools'> & {
 };
 
 export type AgentConfigs = AgentConfig[];
+
+/**
+ * 连接配置：定义如何连接到 AI 服务
+ * CLI 用户只需提供这些信息
+ */
+export interface ConnectionConfig {
+    /** 行为配置名称（引用 Core 中的预设配置） */
+    name: string;
+    /** API 基础 URL */
+    base_url: string;
+    /** API 密钥 */
+    api_key: string;
+    /** 模型名称 */
+    model: string;
+    /** 最大重试次数（可选） */
+    max_retries?: number;
+    /** 超时时间（毫秒，可选） */
+    timeout?: number;
+    /** 覆盖行为配置（可选） */
+    overrides?: Partial<BehaviorConfig>;
+}
+
+/**
+ * 行为配置：定义 Agent 的行为特征
+ * 由 Core 包提供，不包含连接信息
+ */
+export interface BehaviorConfig {
+    /** 模型 ID */
+    model_id: string;
+    /** 提供商名称 */
+    provider: string;
+    /** 启用的工具列表 */
+    tools: string[];
+    /** 系统提示词 */
+    prompt: string;
+    /** 工具选择策略 */
+    tool_choice?: 'auto' | 'required' | 'none' | { type: 'tool'; toolName: string };
+    /** 额外的请求参数 */
+    extra_body?: Record<string, any>;
+    /** 最大输出 token 数 */
+    max_output_tokens?: number;
+    /** 温度参数 */
+    temperature?: number;
+    /** Top-p 参数 */
+    top_p?: number;
+    /** 最大步骤数 */
+    max_steps?: number;
+    /** 最大重试次数 */
+    max_retries?: number;
+    /** 超时时间（毫秒） */
+    timeout?: number;
+    /** 配置版本 */
+    version?: string;
+    /** 配置描述 */
+    description?: string;
+    /** MCP 配置 */
+    mcp?: Record<string, any>;
+}
