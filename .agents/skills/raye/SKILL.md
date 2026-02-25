@@ -195,6 +195,64 @@ import { coreFunction } from '../../core/index.js'
 - Define types in `src/types/` directory
 - Export types separately: `export type { ... }`
 - Use strict TypeScript settings
+- **ALWAYS explicitly declare types - never rely on type inference**
+
+**Function Return Types:**
+- ✅ `function getName(): string { return 'name' }`
+- ✅ `const getData = (): Promise<Data> => fetchData()`
+- ✅ `async function process(): Promise<void> { ... }`
+- ❌ `function getName() { return 'name' }` (missing return type)
+- ❌ `const getData = async () => fetchData()` (missing return type)
+
+**Variable Types:**
+- ✅ `const count: number = 0`
+- ✅ `let user: User | null = null`
+- ✅ `const items: string[] = []`
+- ❌ `const count = 0` (missing type annotation)
+- ❌ `let user = null` (missing type annotation)
+
+**Function Parameters:**
+- ✅ `function process(data: Data, options: Options): Result { ... }`
+- ✅ `const handler = (event: Event, context: Context): void => { ... }`
+- ❌ `function process(data, options) { ... }` (missing parameter types)
+
+**Object Properties:**
+- ✅ `const config: Config = { timeout: 5000, retry: true }`
+- ✅ `const user: { name: string; age: number } = { name: 'John', age: 30 }`
+- ❌ `const config = { timeout: 5000, retry: true }` (missing type)
+
+**Array Types:**
+- ✅ `const names: string[] = []`
+- ✅ `const users: Array<User> = []`
+- ❌ `const names = []` (missing type annotation)
+
+**Class Properties and Methods:**
+```typescript
+// ✅ Correct
+class UserService {
+  private users: User[] = []
+  
+  constructor(private config: Config) {}
+  
+  getUser(id: string): User | undefined {
+    return this.users.find(u => u.id === id)
+  }
+}
+
+// ❌ Wrong
+class UserService {
+  private users = []  // missing type
+  
+  getUser(id) {  // missing parameter and return types
+    return this.users.find(u => u.id === id)
+  }
+}
+```
+
+**Generic Types:**
+- ✅ `function map<T, U>(items: T[], fn: (item: T) => U): U[] { ... }`
+- ✅ `const cache: Map<string, Data> = new Map()`
+- ❌ `function map(items, fn) { ... }` (missing generic and parameter types)
 
 ### 3. Testing
 - Co-locate test files in `test/` directory
